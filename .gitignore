@@ -29,7 +29,14 @@ __pycache__/
 /m365-native.next
 /m365-native.service
 /m365-native.rollback*
+/m365-native.exe~
 /data/
 /secrets/
 .runtime-backups/
 runtime.pid
+conversations.json
+sessions.json
+test-results.jsonl
+server.log
+server-error.log
+*.pid

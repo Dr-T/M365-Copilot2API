@@ -87,3 +87,80 @@ func (s *sessionStore) delete(id string) bool {
 	s.saveLocked()
 	return true
 }
+
+type userSession struct {
+	ConversationID string    `json:"conversationId"`
+	SessionID      string    `json:"sessionId"`
+	AccountID      string    `json:"accountId"`
+	LastUsedAt     time.Time `json:"lastUsedAt"`
+}
+
+type userSessionStore struct {
+	mu      sync.Mutex
+	path    string
+	data    map[string]userSession
+	ttl     time.Duration
+}
+
+func openUserSessionStore(ttl time.Duration) *userSessionStore {
+	path := os.Getenv("M365_USER_SESSION_CACHE")
+	if path == "" {
+		path = filepath.Join(os.TempDir(), "m365-native-user-sessions.json")
+	}
+	s := &userSessionStore{path: path, data: map[string]userSession{}, ttl: ttl}
+	if b, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(b, &s.data)
+	}
+	s.evictLocked()
+	return s
+}
+
+func (s *userSessionStore) saveLocked() {
+	b, _ := json.MarshalIndent(s.data, "", "  ")
+	_ = os.MkdirAll(filepath.Dir(s.path), 0o700)
+	_ = os.WriteFile(s.path, b, 0o600)
+}
+
+func (s *userSessionStore) evictLocked() {
+	if s.ttl <= 0 {
+		return
+	}
+	cutoff := time.Now().UTC().Add(-s.ttl)
+	for k, v := range s.data {
+		if v.LastUsedAt.Before(cutoff) {
+			delete(s.data, k)
+		}
+	}
+}
+
+func (s *userSessionStore) Get(user string) (userSession, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.evictLocked()
+	v, ok := s.data[user]
+	if ok {
+		v.LastUsedAt = time.Now().UTC()
+		s.data[user] = v
+		s.saveLocked()
+	}
+	return v, ok
+}
+
+func (s *userSessionStore) Put(user, conversationID, sessionID, accountID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data[user] = userSession{
+		ConversationID: conversationID,
+		SessionID:      sessionID,
+		AccountID:      accountID,
+		LastUsedAt:     time.Now().UTC(),
+	}
+	s.saveLocked()
+}
+
+func (s *userSessionStore) Delete(user string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.data, user)
+	s.saveLocked()
+}

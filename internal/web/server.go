@@ -14,6 +14,7 @@ import (
 	"m365-native/internal/chathub"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -31,20 +32,23 @@ type pendingPKCE struct {
 }
 
 type Server struct {
-	mu                 sync.Mutex
-	tokens             *auth.Store
-	pkce               map[string]pendingPKCE
-	chat               *chathub.Client
-	sessions           *sessionStore
-	adminPassword      string
-	adminSessions      map[string]time.Time
-	mustChangePassword bool
-	loginAttempts      map[string]loginAttempt
-	apiKeys            *apiKeyStore
-	debug              *debugStore
-	settings           *settingsStore
-	responseMu         sync.Mutex
-	responseMessages   map[string][]oaiMsg
+	mu                  sync.Mutex
+	tokens              *auth.Store
+	pkce                map[string]pendingPKCE
+	chat                *chathub.Client
+	sessions            *sessionStore
+	userSessions        *userSessionStore
+	sessionResolver     *sessionResolver
+	conversationManager *conversationManager
+	adminPassword       string
+	adminSessions       map[string]time.Time
+	mustChangePassword  bool
+	loginAttempts       map[string]loginAttempt
+	apiKeys             *apiKeyStore
+	debug               *debugStore
+	settings            *settingsStore
+	responseMu          sync.Mutex
+	responseMessages    map[string][]oaiMsg
 }
 
 func New() (*Server, error) {
@@ -53,6 +57,12 @@ func New() (*Server, error) {
 		return nil, err
 	}
 	password, mustChange := loadAdminPassword()
+	sessionTTL := 30 * time.Minute
+	if v := os.Getenv("M365_USER_SESSION_TTL_MINUTES"); v != "" {
+		if d, err := time.ParseDuration(v + "m"); err == nil {
+			sessionTTL = d
+		}
+	}
 	return &Server{
 		tokens: store,
 		pkce:   map[string]pendingPKCE{},
@@ -61,7 +71,10 @@ func New() (*Server, error) {
 			c.Trace = func(meta map[string]any) { fmt.Printf("[multimodal-trace] %s\\n", mustJSON(meta)) }
 			return c
 		}(),
-		sessions:           openSessionStore(),
+		sessions:            openSessionStore(),
+		userSessions:        openUserSessionStore(sessionTTL),
+		sessionResolver:     openSessionResolver(),
+		conversationManager: openConversationManager(),
 		adminPassword:      password,
 		adminSessions:      map[string]time.Time{},
 		mustChangePassword: mustChange,
@@ -71,6 +84,23 @@ func New() (*Server, error) {
 		settings:           openSettingsStore(),
 		responseMessages:   map[string][]oaiMsg{},
 	}, nil
+}
+
+func (s *Server) InitM365CloudClient() {
+	accounts := s.tokens.List()
+	if len(accounts) == 0 {
+		return
+	}
+	acc := accounts[0]
+	clientID := os.Getenv("M365_CLIENT_ID")
+	if clientID == "" {
+		clientID = acc.ClientID
+	}
+	if clientID == "" {
+		clientID = auth.DefaultClientID
+	}
+	InitM365CloudClient(clientID, acc.TID, acc.RefreshToken)
+	log.Printf("[m365-cloud] client initialized for account %s", acc.Email)
 }
 
 func (s *Server) Routes() http.Handler {
@@ -100,6 +130,15 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/chat/stream", s.chatStream)
 	m.HandleFunc("/api/conversations", s.conversations)
 	m.HandleFunc("/api/conversations/delete", s.deleteConversation)
+	m.HandleFunc("/api/conversations/cleanup", s.conversationCleanup)
+	m.HandleFunc("/api/conversations/whitelist", s.conversationWhitelist)
+	m.HandleFunc("/v1/sessions", s.handleSessions)
+	m.HandleFunc("/v1/sessions/", s.handleSessionDelete)
+	m.HandleFunc("/api/m365/conversations", s.handleM365Conversations)
+	m.HandleFunc("/api/m365/conversations/delete", s.handleM365Delete)
+	m.HandleFunc("/api/m365/conversations/cleanup", s.handleM365Cleanup)
+	m.HandleFunc("/api/stats", s.handleCacheStats)
+	m.HandleFunc("/api/stats/reset", s.handleCacheStatsReset)
 	m.HandleFunc("/v1/models", s.openaiModels)
 	m.HandleFunc("/v1/chat/completions", s.openaiChat)
 	m.HandleFunc("/v1/responses", s.responses)
@@ -111,7 +150,7 @@ func (s *Server) Routes() http.Handler {
 
 func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/admin/login" || r.URL.Path == "/api/admin/session" || r.URL.Path == "/api/admin/change-password" || r.URL.Path == "/api/admin/logout" || r.URL.Path == "/" {
+		if r.URL.Path == "/api/admin/login" || r.URL.Path == "/api/admin/session" || r.URL.Path == "/api/admin/change-password" || r.URL.Path == "/api/admin/logout" || r.URL.Path == "/" || r.URL.Path == "/api/stats" || r.URL.Path == "/api/stats/reset" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -771,7 +810,24 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			body.SessionID = firstNonEmpty(body.SessionID, v.SessionID)
 		}
 	}
-	accountID := firstNonEmpty(body.AccountID, body.User)
+	if body.User != "" && body.ConversationID == "" {
+		if us, ok := s.userSessions.Get(body.User); ok {
+			body.AccountID = firstNonEmpty(body.AccountID, us.AccountID)
+			body.ConversationID = us.ConversationID
+			body.SessionID = us.SessionID
+			log.Printf("[user-session] hit user=%s conversation=%s session=%s", body.User, us.ConversationID, us.SessionID)
+		}
+	}
+	if body.ConversationID == "" && len(body.Messages) > 0 {
+		resolved := s.sessionResolver.Resolve(r, &body)
+		if !resolved.IsNew {
+			body.ConversationID = resolved.ConversationID
+			body.SessionID = resolved.SessionID
+			body.AccountID = firstNonEmpty(body.AccountID, resolved.AccountID)
+			log.Printf("[session-resolver] matched=%s conversation=%s", resolved.MatchedBy, resolved.ConversationID)
+		}
+	}
+	accountID := body.AccountID
 	acc, err := s.resolveAccount(accountID)
 	if err != nil {
 		log.Printf("[account-route] resolve failed requested=%q err=%v", accountID, err)
@@ -996,7 +1052,13 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			return
 		}
 	}
-	answerPrompt := prompt + "\n" + ledger.RouterContext() + "\nFINAL ANSWER RULE: Report only actions supported by completed tool results. If the goal is not fully verified, state exactly what remains unconfirmed."
+	answerPrompt := prompt
+	if len(ledger.Completed) > 0 || len(ledger.Pending) > 0 {
+		answerPrompt += "\n" + ledger.RouterContext()
+	}
+	if len(ledger.Completed) > 0 {
+		answerPrompt += "\nFINAL ANSWER RULE: Report only actions supported by completed tool results. If the goal is not fully verified, state exactly what remains unconfirmed."
+	}
 	answerReq := chathub.Request{Text: answerPrompt, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments}
 	if planningMode == "native" {
 		answerReq.Tools = body.Tools
@@ -1049,11 +1111,50 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		return
 	}
 	if body.Stream {
+		if body.User != "" && res.ConversationID != "" {
+			s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
+		}
 		return
 	}
 
 	if body.SessionKey != "" {
 		s.sessions.upsert(conversation{ID: body.SessionKey, AccountID: acc.ID, ConversationID: res.ConversationID, SessionID: res.SessionID, Title: prompt})
+	}
+	if body.User != "" && res.ConversationID != "" {
+		s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
+		log.Printf("[user-session] put user=%s conversation=%s session=%s", body.User, res.ConversationID, res.SessionID)
+	}
+	if res.ConversationID != "" {
+		s.sessionResolver.Bind("", res.ConversationID, acc.ID, &body, r)
+		s.conversationManager.Record(res.ConversationID, acc.ID, prompt)
+		if s.conversationManager.ShouldCleanup() {
+			if cleaned := s.conversationManager.Cleanup(); len(cleaned) > 0 {
+				log.Printf("[conversation-manager] auto-cleaned %d conversations", len(cleaned))
+			}
+		}
+		if m365CloudClient != nil {
+			go func() {
+				if err := m365CloudClient.DeleteConversation(res.ConversationID); err != nil {
+					log.Printf("[m365-cloud] auto-delete failed: %v", err)
+				}
+			}()
+		}
+
+		// 记录缓存统计
+		apiKey := extractAPIKey(r)
+		historyTokens := int64(0)
+		for _, msg := range body.Messages[:len(body.Messages)-1] {
+			historyTokens += EstimateTokens(contentToString(msg.Content))
+		}
+		newTokens := EstimateTokens(prompt)
+		sessions := s.sessionResolver.ListSessions()
+		cacheStats.RecordRequest(apiKey, historyTokens > 0, newTokens, historyTokens, len(sessions))
+	}
+	if res.ConversationID != "" {
+		resolved := s.sessionResolver.Resolve(r, &body)
+		if !resolved.IsNew {
+			w.Header().Set(sessionHeaderName, resolved.SessionID)
+		}
 	}
 	model := body.Model
 	if model == "" {
@@ -1097,6 +1198,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	if !completionEvidenceAllows(res.Text, ledger) {
 		res.Text = "I cannot confirm completion because no matching tool results were returned. No external action has been verified."
 	}
+	log.Printf("[debug] res.Text bytes=%d content=%q", len(res.Text), res.Text)
 	created := time.Now().Unix()
 
 	if body.Stream {
@@ -1153,6 +1255,23 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}},
 		"m365": compatM365Metadata(res),
 	})
+}
+
+const sessionHeaderName = "X-M365-Session-Id"
+
+func extractAPIKey(r *http.Request) string {
+	key := strings.TrimSpace(r.Header.Get("X-API-Key"))
+	if key != "" {
+		return key
+	}
+	auth := r.Header.Get("Authorization")
+	if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+		key = strings.TrimSpace(auth[7:])
+	}
+	if len(key) > 8 {
+		return key[:8] + "..."
+	}
+	return key
 }
 
 func firstNonEmpty(vals ...string) string {
