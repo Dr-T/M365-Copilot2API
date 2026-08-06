@@ -22,6 +22,7 @@ type imageGenerationRequest struct {
 }
 
 func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
+	startedAt := time.Now()
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", 405)
 		return
@@ -120,6 +121,16 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 			data = append(data, map[string]string{"url": u})
 		}
 	}
+	s.usage.record(UsageRecord{
+		Time:         time.Now(),
+		APIKeyPrefix: extractAPIKey(r),
+		AccountEmail: acc.Email,
+		Model:        firstNonEmpty(b.Model, "flux"),
+		Endpoint:     "/v1/images/generations",
+		InputTokens:  EstimateTokens(prompt),
+		DurationMs:   time.Since(startedAt).Milliseconds(),
+		Status:       200,
+	})
 	jsonOut(w, map[string]any{"created": time.Now().Unix(), "data": data, "m365": map[string]any{"conversationId": res.ConversationID, "sessionId": res.SessionID, "images": images}})
 }
 

@@ -20,7 +20,7 @@ func securityHeaders(next http.Handler) http.Handler {
 }
 
 func (s *Server) rootPage(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+	if r.URL.Path != "/" && r.URL.Path != "/login" {
 		http.NotFound(w, r)
 		return
 	}

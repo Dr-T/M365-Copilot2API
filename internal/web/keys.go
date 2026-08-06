@@ -17,6 +17,7 @@ type apiKeyRecord struct {
 	Name       string     `json:"name"`
 	Prefix     string     `json:"prefix"`
 	Hash       string     `json:"hash"`
+	Raw        string     `json:"raw,omitempty"`
 	CreatedAt  time.Time  `json:"createdAt"`
 	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
 	Revoked    bool       `json:"revoked"`
@@ -57,7 +58,7 @@ func (s *apiKeyStore) create(name string) (apiKeyRecord, string, error) {
 		return apiKeyRecord{}, "", e
 	}
 	raw := "m365_" + hex.EncodeToString(b)
-	r := apiKeyRecord{ID: hex.EncodeToString(b[:8]), Name: name, Prefix: raw[:12], Hash: keyHash(raw), CreatedAt: time.Now()}
+	r := apiKeyRecord{ID: hex.EncodeToString(b[:8]), Name: name, Prefix: raw[:12], Hash: keyHash(raw), Raw: raw, CreatedAt: time.Now()}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Keys = append(s.Keys, r)
@@ -89,6 +90,27 @@ func (s *apiKeyStore) revoke(id string) (bool, error) {
 			}
 			return true, nil
 		}
+	}
+	return false, nil
+}
+
+func (s *apiKeyStore) update(id, name string, revoked *bool) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.Keys {
+		if s.Keys[i].ID != id {
+			continue
+		}
+		if name != "" {
+			s.Keys[i].Name = name
+		}
+		if revoked != nil {
+			s.Keys[i].Revoked = *revoked
+		}
+		if err := s.save(); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	return false, nil
 }

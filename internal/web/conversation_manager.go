@@ -28,13 +28,18 @@ type managedConversation struct {
 }
 
 type conversationManager struct {
-	mu          sync.Mutex
-	path        string
-	data        map[string]managedConversation
-	mode        ConversationCleanupMode
-	keepN       int
-	maxAge      time.Duration
-	whitelist   map[string]bool
+	mu        sync.Mutex
+	path      string
+	data      map[string]managedConversation
+	mode      ConversationCleanupMode
+	keepN     int
+	maxAge    time.Duration
+	whitelist map[string]bool
+}
+
+type conversationPersist struct {
+	Conversations map[string]managedConversation `json:"conversations"`
+	Whitelist     []string                       `json:"whitelist,omitempty"`
 }
 
 func openConversationManager() *conversationManager {
@@ -71,13 +76,27 @@ func openConversationManager() *conversationManager {
 }
 
 func (cm *conversationManager) loadLocked() {
-	if b, err := os.ReadFile(cm.path); err == nil {
-		_ = json.Unmarshal(b, &cm.data)
+	b, err := os.ReadFile(cm.path)
+	if err != nil {
+		return
 	}
+	var p conversationPersist
+	if json.Unmarshal(b, &p) == nil && p.Conversations != nil {
+		cm.data = p.Conversations
+		for _, id := range p.Whitelist {
+			cm.whitelist[id] = true
+		}
+		return
+	}
+	_ = json.Unmarshal(b, &cm.data)
 }
 
 func (cm *conversationManager) saveLocked() {
-	b, _ := json.MarshalIndent(cm.data, "", "  ")
+	p := conversationPersist{Conversations: cm.data}
+	for id := range cm.whitelist {
+		p.Whitelist = append(p.Whitelist, id)
+	}
+	b, _ := json.MarshalIndent(p, "", "  ")
 	_ = os.WriteFile(cm.path, b, 0o600)
 }
 
@@ -100,12 +119,30 @@ func (cm *conversationManager) Whitelist(conversationID string) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	cm.whitelist[conversationID] = true
+	cm.saveLocked()
 }
 
 func (cm *conversationManager) Unwhitelist(conversationID string) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	delete(cm.whitelist, conversationID)
+	cm.saveLocked()
+}
+
+func (cm *conversationManager) IsWhitelisted(conversationID string) bool {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	return cm.whitelist[conversationID]
+}
+
+func (cm *conversationManager) WhitelistedIDs() []string {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	out := make([]string, 0, len(cm.whitelist))
+	for id := range cm.whitelist {
+		out = append(out, id)
+	}
+	return out
 }
 
 func (cm *conversationManager) Delete(conversationID string) {

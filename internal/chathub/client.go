@@ -199,17 +199,31 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			log.Printf("chathub timing first_delta_ms=%d len=%d", time.Since(payloadSentAt).Milliseconds(), len(d))
 		}
 		streamedText += d
+		deltas = append(deltas, d)
 		if onDelta != nil {
 			return onDelta(d)
 		}
 		return nil
 	}
+	// ChatHub signals text either as a full snapshot or as cursor rewrites.
+	// Only the portion not already streamed may be emitted; naive prefix
+	// checks misfire when upstream rewrites the whole buffer, which duplicated
+	// answers (AAA…). Match any overlap and emit the tail.
 	emitSnapshot := func(snapshot string) error {
 		if snapshot == "" {
 			return nil
 		}
-		if streamedText != "" && strings.HasPrefix(snapshot, streamedText) {
+		if streamedText == "" {
+			return emitDelta(snapshot)
+		}
+		if strings.HasPrefix(snapshot, streamedText) {
 			return emitDelta(strings.TrimPrefix(snapshot, streamedText))
+		}
+		if i := strings.Index(snapshot, streamedText); i >= 0 {
+			return emitDelta(snapshot[i+len(streamedText):])
+		}
+		if len(snapshot) > len(streamedText) && strings.HasSuffix(snapshot, streamedText) {
+			return emitDelta(snapshot[:len(snapshot)-len(streamedText)])
 		}
 		return emitDelta(snapshot)
 	}
@@ -286,7 +300,6 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 						}
 					}
 					if w, ok := arg["writeAtCursor"].(string); ok && w != "" && !toolFrame {
-						deltas = append(deltas, w)
 						if err := emitSnapshot(w); err != nil {
 							return Result{}, err
 						}
@@ -306,7 +319,6 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 							if author == "bot" && mt == "" && text != "" {
 								// ChatHub often sends the first visible text as a full snapshot,
 								// followed by cursor deltas. Emit only the unseen suffix.
-								deltas = append(deltas, text)
 								if err := emitSnapshot(text); err != nil {
 									return Result{}, err
 								}

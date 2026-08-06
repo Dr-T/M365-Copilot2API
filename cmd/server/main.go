@@ -19,6 +19,7 @@ func main() {
 		log.Fatal(e)
 	}
 	s.InitM365CloudClient()
+	s.StartAutoCleanup()
 	listen := "127.0.0.1:4141"
 	if v := os.Getenv("M365_LISTEN"); v != "" {
 		listen = v

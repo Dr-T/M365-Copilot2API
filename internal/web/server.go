@@ -49,6 +49,7 @@ type Server struct {
 	settings            *settingsStore
 	responseMu          sync.Mutex
 	responseMessages    map[string][]oaiMsg
+	usage               *usageLog
 }
 
 func New() (*Server, error) {
@@ -83,6 +84,7 @@ func New() (*Server, error) {
 		debug:              openDebugStore(),
 		settings:           openSettingsStore(),
 		responseMessages:   map[string][]oaiMsg{},
+		usage:              openUsageLog(),
 	}, nil
 }
 
@@ -139,6 +141,8 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/m365/conversations/cleanup", s.handleM365Cleanup)
 	m.HandleFunc("/api/stats", s.handleCacheStats)
 	m.HandleFunc("/api/stats/reset", s.handleCacheStatsReset)
+	m.HandleFunc("/api/usage", s.adminUsage)
+	m.HandleFunc("/api/usage/logs", s.adminUsageLogs)
 	m.HandleFunc("/v1/models", s.openaiModels)
 	m.HandleFunc("/v1/chat/completions", s.openaiChat)
 	m.HandleFunc("/v1/responses", s.responses)
@@ -150,7 +154,7 @@ func (s *Server) Routes() http.Handler {
 
 func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/admin/login" || r.URL.Path == "/api/admin/session" || r.URL.Path == "/api/admin/change-password" || r.URL.Path == "/api/admin/logout" || r.URL.Path == "/" || r.URL.Path == "/api/stats" || r.URL.Path == "/api/stats/reset" {
+		if r.URL.Path == "/api/admin/login" || r.URL.Path == "/api/admin/session" || r.URL.Path == "/api/admin/change-password" || r.URL.Path == "/api/admin/logout" || r.URL.Path == "/" || r.URL.Path == "/login" || r.URL.Path == "/api/stats" || r.URL.Path == "/api/stats/reset" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -293,6 +297,26 @@ func (s *Server) adminKeys(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		jsonOut(w, map[string]string{"status": "revoked"})
+	case http.MethodPut:
+		var b struct {
+			ID      string `json:"id"`
+			Name    string `json:"name"`
+			Revoked *bool  `json:"revoked"`
+		}
+		if json.NewDecoder(r.Body).Decode(&b) != nil || b.ID == "" {
+			http.Error(w, "bad json", 400)
+			return
+		}
+		updated, e := s.apiKeys.update(b.ID, b.Name, b.Revoked)
+		if e != nil {
+			http.Error(w, e.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !updated {
+			http.Error(w, "key not found", 404)
+			return
+		}
+		jsonOut(w, map[string]string{"status": "updated"})
 	default:
 		http.Error(w, "method not allowed", 405)
 	}
@@ -519,7 +543,7 @@ func (s *Server) callbackPKCE(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {
 	if accountID == "" {
-		acc, ok := s.tokens.First()
+		acc, ok := s.tokens.Next()
 		if !ok {
 			return auth.AccountToken{}, fmt.Errorf("no accounts; login first")
 		}
@@ -818,13 +842,24 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[user-session] hit user=%s conversation=%s session=%s", body.User, us.ConversationID, us.SessionID)
 		}
 	}
+	// 内容键会话复用：命中后云端对话已存全量历史，只需把客户端新增的
+	// 消息拼成增量 prompt 发送（对齐 DeepSeek 上下文缓存语义）。
+	answerPrompt := prompt
 	if body.ConversationID == "" && len(body.Messages) > 0 {
 		resolved := s.sessionResolver.Resolve(r, &body)
 		if !resolved.IsNew {
 			body.ConversationID = resolved.ConversationID
 			body.SessionID = resolved.SessionID
 			body.AccountID = firstNonEmpty(body.AccountID, resolved.AccountID)
-			log.Printf("[session-resolver] matched=%s conversation=%s", resolved.MatchedBy, resolved.ConversationID)
+			log.Printf("[session-resolver] matched=%s conversation=%s history=%d total=%d", resolved.MatchedBy, resolved.ConversationID, resolved.HistoryLen, len(body.Messages))
+			if resolved.HistoryLen > 0 && resolved.HistoryLen < len(body.Messages) {
+				incPrompt, incAtt := flattenPromptMessages(body.Messages[resolved.HistoryLen:], nil)
+				incPrompt = strings.TrimSpace(incPrompt)
+				if incPrompt != "" {
+					answerPrompt = incPrompt
+					body.Attachments = incAtt
+				}
+			}
 		}
 	}
 	accountID := body.AccountID
@@ -905,7 +940,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if body.Stream {
-		answerPrompt := prompt + "\n" + ledger.RouterContext() + "\nFINAL ANSWER RULE: Answer the user directly. If a tool is explicitly required, emit its structured call; otherwise return ordinary text."
+		answerPrompt = answerPrompt + "\n" + ledger.RouterContext() + "\nFINAL ANSWER RULE: Answer the user directly. If a tool is explicitly required, emit its structured call; otherwise return ordinary text."
 		log.Printf("[req-trace] id=%s stage=answer_start prompt_len=%d", requestID, len(answerPrompt))
 		answerReq := chathub.Request{Text: answerPrompt, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, Tools: body.Tools, ToolChoice: body.ToolChoice}
 		id := "chatcmpl-" + uuid.NewString()
@@ -992,11 +1027,19 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		if len(calls) > 0 {
 			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
 			_ = writeToolResponse(w, id, model, true, calls, chathub.Result{Text: text.String()}, true)
+			if body.User != "" && res.ConversationID != "" {
+				s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
+			}
+			s.bindConversation(acc, &body, r, res, answerPrompt, startedAt)
 			return
 		}
 		emitText(pending.String())
 		fmt.Fprint(w, "data: [DONE]\n\n")
 		flusher.Flush()
+		if body.User != "" && res.ConversationID != "" {
+			s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
+		}
+		s.bindConversation(acc, &body, r, res, answerPrompt, startedAt)
 		return
 	}
 	// Ask the upstream model to select and validate the next tool. The gateway
@@ -1052,7 +1095,6 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			return
 		}
 	}
-	answerPrompt := prompt
 	if len(ledger.Completed) > 0 || len(ledger.Pending) > 0 {
 		answerPrompt += "\n" + ledger.RouterContext()
 	}
@@ -1114,6 +1156,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		if body.User != "" && res.ConversationID != "" {
 			s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
 		}
+		s.bindConversation(acc, &body, r, res, prompt, startedAt)
 		return
 	}
 
@@ -1125,30 +1168,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		log.Printf("[user-session] put user=%s conversation=%s session=%s", body.User, res.ConversationID, res.SessionID)
 	}
 	if res.ConversationID != "" {
-		s.sessionResolver.Bind("", res.ConversationID, acc.ID, &body, r)
-		s.conversationManager.Record(res.ConversationID, acc.ID, prompt)
-		if s.conversationManager.ShouldCleanup() {
-			if cleaned := s.conversationManager.Cleanup(); len(cleaned) > 0 {
-				log.Printf("[conversation-manager] auto-cleaned %d conversations", len(cleaned))
-			}
-		}
-		if m365CloudClient != nil {
-			go func() {
-				if err := m365CloudClient.DeleteConversation(res.ConversationID); err != nil {
-					log.Printf("[m365-cloud] auto-delete failed: %v", err)
-				}
-			}()
-		}
-
-		// 记录缓存统计
-		apiKey := extractAPIKey(r)
-		historyTokens := int64(0)
-		for _, msg := range body.Messages[:len(body.Messages)-1] {
-			historyTokens += EstimateTokens(contentToString(msg.Content))
-		}
-		newTokens := EstimateTokens(prompt)
-		sessions := s.sessionResolver.ListSessions()
-		cacheStats.RecordRequest(apiKey, historyTokens > 0, newTokens, historyTokens, len(sessions))
+		s.bindConversation(acc, &body, r, res, prompt, startedAt)
 	}
 	if res.ConversationID != "" {
 		resolved := s.sessionResolver.Resolve(r, &body)
@@ -1258,6 +1278,48 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 }
 
 const sessionHeaderName = "X-M365-Session-Id"
+
+// bindConversation 在请求完成后登记会话解析器索引与缓存统计，流式与非流式
+// 路径共用。会话为内容键，云端的对话由 auto_cleanup 按 2h 闲置窗口回收，
+// 这里不再做"用完即删"，否则复用永远不可能命中。
+func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.Request, res chathub.Result, prompt string, startedAt time.Time) {
+	if res.ConversationID == "" {
+		return
+	}
+	s.sessionResolver.Bind("", res.ConversationID, acc.ID, body, r)
+	s.conversationManager.Record(res.ConversationID, acc.ID, prompt)
+	if s.conversationManager.ShouldCleanup() {
+		if cleaned := s.conversationManager.Cleanup(); len(cleaned) > 0 {
+			log.Printf("[conversation-manager] auto-cleaned %d conversations", len(cleaned))
+		}
+	}
+
+	apiKey := extractAPIKey(r)
+	historyTokens := int64(0)
+	upper := len(body.Messages) - 1
+	if upper > len(body.Messages) {
+		upper = len(body.Messages)
+	}
+	for _, msg := range body.Messages[:upper] {
+		historyTokens += EstimateTokens(contentToString(msg.Content))
+	}
+	newTokens := EstimateTokens(prompt)
+	sessions := s.sessionResolver.ListSessions()
+	cacheStats.RecordRequest(apiKey, historyTokens > 0, newTokens, historyTokens, len(sessions))
+	s.usage.record(UsageRecord{
+		Time:         time.Now(),
+		APIKeyPrefix: apiKey,
+		AccountEmail: acc.Email,
+		Model:        firstNonEmpty(body.Model, "m365-copilot"),
+		Endpoint:     "/v1/chat/completions",
+		Stream:       body.Stream,
+		InputTokens:  newTokens,
+		OutputTokens: EstimateTokens(res.Text),
+		CacheTokens:  historyTokens,
+		DurationMs:   time.Since(startedAt).Milliseconds(),
+		Status:       200,
+	})
+}
 
 func extractAPIKey(r *http.Request) string {
 	key := strings.TrimSpace(r.Header.Get("X-API-Key"))

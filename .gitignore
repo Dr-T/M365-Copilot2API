@@ -12,6 +12,7 @@ cookies*.txt
 # Build artifacts
 /m365-native
 /m365-native.exe
+/m365-native.exe.rollback
 /bin/
 /dist/
 *.out

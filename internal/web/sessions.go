@@ -164,3 +164,19 @@ func (s *userSessionStore) Delete(user string) {
 	delete(s.data, user)
 	s.saveLocked()
 }
+
+// ActiveConversations returns conversation IDs whose owning user used the
+// session within the given window. The auto-cleanup skips these so a user's
+// in-flight conversation is never removed while still in use.
+func (s *userSessionStore) ActiveConversations(window time.Duration) map[string]bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cutoff := time.Now().UTC().Add(-window)
+	out := map[string]bool{}
+	for _, v := range s.data {
+		if v.LastUsedAt.After(cutoff) {
+			out[v.ConversationID] = true
+		}
+	}
+	return out
+}

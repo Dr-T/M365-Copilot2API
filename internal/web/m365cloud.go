@@ -211,31 +211,51 @@ func (c *M365CloudClient) ListConversations() ([]map[string]any, error) {
 }
 
 func (c *M365CloudClient) CleanupOldConversations(maxAge time.Duration, keepN int) (int, error) {
-	chats, err := c.ListConversations()
-	if err != nil {
-		return 0, err
-	}
-
+	// 微软历史列表是"滑动式"的：RefreshNavPane 一次只返回一屏对话，
+	// 删除后进行到的对话会顶上来成为新一批。因此循环拉取删除，直到列表清空。
 	now := time.Now().UnixMilli()
 	deleted := 0
 	kept := 0
-
-	for _, chat := range chats {
-		convID, _ := chat["conversationId"].(string)
-		createTime, _ := chat["createTimeUtc"].(float64)
-		if convID == "" {
-			continue
+	for round := 0; round < 100; round++ {
+		chats, err := c.ListConversations()
+		if err != nil {
+			return deleted, err
 		}
-
-		age := time.Duration(now-int64(createTime)) * time.Millisecond
-		if age > maxAge || kept >= keepN {
-			if err := c.DeleteConversation(convID); err != nil {
-				log.Printf("[m365-cloud] failed to delete %s: %v", convID, err)
+		if len(chats) == 0 {
+			break
+		}
+		anyDeleted := false
+		for _, chat := range chats {
+			convID, _ := chat["conversationId"].(string)
+			createTime, _ := chat["createTimeUtc"].(float64)
+			if convID == "" {
 				continue
 			}
-			deleted++
-		} else {
-			kept++
+
+			age := time.Duration(now-int64(createTime)) * time.Millisecond
+			if age > maxAge {
+				if err := c.DeleteConversation(convID); err != nil {
+					log.Printf("[m365-cloud] failed to delete %s: %v", convID, err)
+					continue
+				}
+				deleted++
+				anyDeleted = true
+			} else {
+				if kept >= keepN {
+					if err := c.DeleteConversation(convID); err != nil {
+						log.Printf("[m365-cloud] failed to delete %s: %v", convID, err)
+						continue
+					}
+					deleted++
+					anyDeleted = true
+				} else {
+					kept++
+				}
+			}
+		}
+		// 本轮没有任何删除（剩余的都是保留项），列表不会再变化，停止循环。
+		if !anyDeleted {
+			break
 		}
 	}
 

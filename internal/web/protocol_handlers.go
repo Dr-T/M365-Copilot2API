@@ -224,6 +224,7 @@ func (s *Server) runOpenAIAdapter(r *http.Request, o oaiReq) (map[string]any, []
 }
 
 func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
+	startedAt := time.Now()
 	if r.Method != http.MethodPost {
 		writeResponsesError(w, 405, "invalid_request_error", "method not allowed")
 		return
@@ -276,6 +277,16 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 	estimate := estimateResponsesUsage(firstNonEmpty(body.Model, "m365-copilot"), o.Messages, o.Tools, o.ToolChoice, outputForUsage)
 	out["usage"] = estimate.Values
 	out["m365_usage_source"] = estimate.Source
+	s.usage.record(UsageRecord{
+		Time:         time.Now(),
+		APIKeyPrefix: extractAPIKey(r),
+		Model:        firstNonEmpty(body.Model, "m365-copilot"),
+		Endpoint:     "/v1/responses",
+		InputTokens:  int64(estimate.Values["input_tokens"].(int)),
+		OutputTokens: int64(estimate.Values["output_tokens"].(int)),
+		DurationMs:   time.Since(startedAt).Milliseconds(),
+		Status:       200,
+	})
 	// Retain the normalized history so a subsequent previous_response_id can
 	// validate its function_call_output against the original tool call.
 	if _, ok := out["id"].(string); ok {
@@ -305,8 +316,7 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 	writeResponsesResult(w, firstNonEmpty(body.Model, "m365-copilot"), body.Stream, out)
 }
 
-func responsesOutputHasContent(src map[string]any) bool {
-	msg, _ := openAIChoice(src)
+func responsesOutputHasContent(src map[string]any) bool {	msg, _ := openAIChoice(src)
 	if msg == nil {
 		return false
 	}
@@ -318,6 +328,7 @@ func responsesOutputHasContent(src map[string]any) bool {
 }
 
 func (s *Server) anthropicMessages(w http.ResponseWriter, r *http.Request) {
+	startedAt := time.Now()
 	if r.Method != http.MethodPost {
 		writeAnthropicError(w, 405, "invalid_request_error", "method not allowed")
 		return
@@ -341,5 +352,16 @@ func (s *Server) anthropicMessages(w http.ResponseWriter, r *http.Request) {
 		writeAnthropicError(w, http.StatusBadGateway, "api_error", "upstream protocol error: "+err.Error())
 		return
 	}
+	estimate := estimateResponsesUsage(firstNonEmpty(body.Model, "m365-copilot"), o.Messages, o.Tools, o.ToolChoice, "")
+	s.usage.record(UsageRecord{
+		Time:         time.Now(),
+		APIKeyPrefix: extractAPIKey(r),
+		Model:        firstNonEmpty(body.Model, "m365-copilot"),
+		Endpoint:     "/v1/messages",
+		InputTokens:  int64(estimate.Values["input_tokens"].(int)),
+		OutputTokens: int64(estimate.Values["output_tokens"].(int)),
+		DurationMs:   time.Since(startedAt).Milliseconds(),
+		Status:       200,
+	})
 	writeAnthropicResult(w, firstNonEmpty(body.Model, "m365-copilot"), body.Stream, out)
 }

@@ -28,9 +28,10 @@ type Cache struct {
 }
 
 type Store struct {
-	mu   sync.Mutex
-	path string
-	data Cache
+	mu      sync.Mutex
+	path    string
+	data    Cache
+	nextIdx int
 }
 
 func CachePath() string {
@@ -184,6 +185,19 @@ func (s *Store) First() (AccountToken, bool) {
 		return AccountToken{}, false
 	}
 	return s.data.Accounts[0], true
+}
+
+// Next returns the next account in round-robin order.
+func (s *Store) Next() (AccountToken, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := len(s.data.Accounts)
+	if n == 0 {
+		return AccountToken{}, false
+	}
+	acc := s.data.Accounts[s.nextIdx%n]
+	s.nextIdx = (s.nextIdx + 1) % n
+	return acc, true
 }
 
 func (s *Store) EnsureValid(id string) (AccountToken, error) {
