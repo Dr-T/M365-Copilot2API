@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -142,7 +143,8 @@ func (c *M365CloudClient) doAPI(action string, payload map[string]any) (map[stri
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 
-	if resp.Header.Get("Content-Type") != "" && resp.Header.Get("Content-Type")[:16] != "application/json" {
+	ct := resp.Header.Get("Content-Type")
+	if ct != "" && !strings.HasPrefix(ct, "application/json") {
 		return nil, fmt.Errorf("unexpected content type: %s, body: %s", resp.Header.Get("Content-Type"), string(body[:min(100, len(body))]))
 	}
 

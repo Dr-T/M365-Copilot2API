@@ -361,12 +361,34 @@ func messagesEqual(a, b oaiMsg) bool {
 	if ta != tb {
 		return false
 	}
-	ca := a.ToolCalls == nil
-	cb := b.ToolCalls == nil
-	if ca != cb {
+	if (a.ToolCalls == nil) != (b.ToolCalls == nil) {
 		return false
 	}
-	return true
+	for i := range a.ToolCalls {
+		if i >= len(b.ToolCalls) {
+			return false
+		}
+		if toolCallEqual(a.ToolCalls[i], b.ToolCalls[i]) {
+			continue
+		}
+		return false
+	}
+	return len(a.ToolCalls) == len(b.ToolCalls)
+}
+
+// toolCallEqual 比较 name 与 arguments，忽略 ID：同一段工具调用重放时
+// ID 由客户端重新生成，不应影响会话键。
+func toolCallEqual(x, y map[string]any) bool {
+	xFunc, _ := x["function"].(map[string]any)
+	yFunc, _ := y["function"].(map[string]any)
+	xn, _ := xFunc["name"].(string)
+	yn, _ := yFunc["name"].(string)
+	if xn != yn {
+		return false
+	}
+	xa, _ := xFunc["arguments"].(string)
+	ya, _ := yFunc["arguments"].(string)
+	return xa == ya
 }
 
 func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, body *oaiReq, r *http.Request) {

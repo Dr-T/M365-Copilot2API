@@ -34,6 +34,7 @@ __pycache__/
 /data/
 /secrets/
 .runtime-backups/
+backups/
 runtime.pid
 conversations.json
 sessions.json

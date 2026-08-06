@@ -84,7 +84,11 @@ func (s *Server) autoCleanupOnce(maxAge time.Duration, keepN int) {
 			if active[convID] {
 				continue
 			}
-			createMs, _ := chat["createTimeUtc"].(float64)
+			createMs, ok := chat["createTimeUtc"].(float64)
+			if !ok {
+				// 时间戳缺失或类型不符时不视为旧会话，避免误删刚创建的云端对话。
+				continue
+			}
 			createInt := int64(createMs)
 			if nowMs-createInt > maxAge.Milliseconds() {
 				stale = append(stale, cand{convID, createInt})

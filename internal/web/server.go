@@ -1011,6 +1011,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		    return nil
 		   })
 		if err != nil {
+			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
+			fmt.Fprint(w, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": upstreamError(err)}})+"\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			flusher.Flush()
 			return
 		}
 		// Some ChatHub updates contain no text event and place the completed
@@ -1107,7 +1111,6 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		answerReq.ToolChoice = body.ToolChoice
 	}
 	var res chathub.Result
-	streamed := false
 	if body.Stream {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
@@ -1130,7 +1133,6 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			chunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": delta}}}
 			fmt.Fprintf(w, "data: %s\n\n", mustJSON(chunk))
 			flusher.Flush()
-			streamed = true
 			return nil
 		}
 		// Commit headers immediately; the first upstream delta is then forwarded
@@ -1141,14 +1143,16 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		if err == nil {
 			fmt.Fprint(w, "data: [DONE]\n\n")
 			flusher.Flush()
+		} else {
+			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
+			fmt.Fprint(w, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": upstreamError(err)}})+"\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			flusher.Flush()
 		}
 	} else {
 		res, err = s.chat.Chat(ctx, account, answerReq)
 	}
 	if err != nil {
-		if streamed {
-			return
-		}
 		http.Error(w, upstreamError(err), http.StatusBadGateway)
 		return
 	}
@@ -1297,8 +1301,8 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 	apiKey := extractAPIKey(r)
 	historyTokens := int64(0)
 	upper := len(body.Messages) - 1
-	if upper > len(body.Messages) {
-		upper = len(body.Messages)
+	if upper < 0 {
+		upper = 0
 	}
 	for _, msg := range body.Messages[:upper] {
 		historyTokens += EstimateTokens(contentToString(msg.Content))
