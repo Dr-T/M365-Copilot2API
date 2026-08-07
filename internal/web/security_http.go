@@ -28,15 +28,7 @@ func (s *Server) rootPage(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
-	name := "web/login.html"
-	if s.validAdminSession(r) {
-		s.mu.Lock()
-		mustChange := s.mustChangePassword
-		s.mu.Unlock()
-		if !mustChange {
-			name = "web/index.html"
-		}
-	}
+	name := "web/index.html"
 	f, err := os.Open(name)
 	if err != nil {
 		http.Error(w, "web interface unavailable", http.StatusInternalServerError)
