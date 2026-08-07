@@ -97,7 +97,7 @@ func (cm *conversationManager) saveLocked() {
 		p.Whitelist = append(p.Whitelist, id)
 	}
 	b, _ := json.MarshalIndent(p, "", "  ")
-	_ = os.WriteFile(cm.path, b, 0o600)
+	_ = writeFileAtomic(cm.path, b, 0o600)
 }
 
 func (cm *conversationManager) Record(conversationID, accountID, title string) {
@@ -192,8 +192,8 @@ func (cm *conversationManager) Cleanup() []string {
 	case CleanupKeepN:
 		if len(cm.data) > cm.keepN {
 			type item struct {
-				id        string
-				lastUsed  time.Time
+				id       string
+				lastUsed time.Time
 			}
 			items := make([]item, 0, len(cm.data))
 			for id, c := range cm.data {

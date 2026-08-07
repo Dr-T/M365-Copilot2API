@@ -30,6 +30,10 @@ const (
 	rs          = "\x1e"
 	defaultTone = "magic"
 	wsBase      = "wss://substrate.office.com/m365Copilot/Chathub"
+	// maxAttachments bounds per-request remote downloads: each image is
+	// base64-encoded and held in memory alongside the multipart body.
+	maxAttachments   = 10
+	maxAttachmentMiB = 10
 )
 
 // Variants mirrored from the verified browser / Python probe.
@@ -204,15 +208,15 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	}
 
 	var deltas []string
-	var streamedText string
+	var streamed strings.Builder
 	emitDelta := func(d string) error {
 		if d == "" {
 			return nil
 		}
-		if streamedText == "" {
+		if streamed.Len() == 0 {
 			log.Printf("chathub timing first_delta_ms=%d len=%d", time.Since(payloadSentAt).Milliseconds(), len(d))
 		}
-		streamedText += d
+		streamed.WriteString(d)
 		deltas = append(deltas, d)
 		if onDelta != nil {
 			return onDelta(d)
@@ -227,17 +231,18 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		if snapshot == "" {
 			return nil
 		}
-		if streamedText == "" {
+		cur := streamed.String()
+		if cur == "" {
 			return emitDelta(snapshot)
 		}
-		if strings.HasPrefix(snapshot, streamedText) {
-			return emitDelta(strings.TrimPrefix(snapshot, streamedText))
+		if strings.HasPrefix(snapshot, cur) {
+			return emitDelta(strings.TrimPrefix(snapshot, cur))
 		}
-		if i := strings.Index(snapshot, streamedText); i >= 0 {
-			return emitDelta(snapshot[i+len(streamedText):])
+		if i := strings.Index(snapshot, cur); i >= 0 {
+			return emitDelta(snapshot[i+len(cur):])
 		}
-		if len(snapshot) > len(streamedText) && strings.HasSuffix(snapshot, streamedText) {
-			return emitDelta(snapshot[:len(snapshot)-len(streamedText)])
+		if len(snapshot) > len(cur) && strings.HasSuffix(snapshot, cur) {
+			return emitDelta(snapshot[:len(snapshot)-len(cur)])
 		}
 		return emitDelta(snapshot)
 	}
@@ -369,7 +374,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					return Result{}, fmt.Errorf("chathub completion error: %v", errObj)
 				}
 				// end of stream
-				log.Printf("chathub timing completion_frame_ms=%d streamed_text=%d events=%d", time.Since(payloadSentAt).Milliseconds(), len(streamedText), len(events))
+				log.Printf("chathub timing completion_frame_ms=%d streamed_text=%d events=%d", time.Since(payloadSentAt).Milliseconds(), streamed.Len(), len(events))
 				text := final
 				if text == "" {
 					text = strings.Join(deltas, "")
@@ -419,10 +424,15 @@ func buildWSURL(acc Account, sessionID, conversationID, requestID string) (strin
 }
 
 func (c *Client) uploadAttachments(ctx context.Context, acc Account, conversationID string, attachments []Attachment) error {
+	imageCount := 0
 	for i := range attachments {
 		a := &attachments[i]
 		if a.Type != "image" {
 			continue
+		}
+		imageCount++
+		if imageCount > maxAttachments {
+			return fmt.Errorf("too many image attachments: limit is %d", maxAttachments)
 		}
 		// For non-data URLs, download the image first
 		imageData := a.URL
@@ -435,7 +445,7 @@ func (c *Client) uploadAttachments(ctx context.Context, acc Account, conversatio
 			if err != nil {
 				continue
 			}
-			body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+			body, err := io.ReadAll(io.LimitReader(resp.Body, maxAttachmentMiB<<20))
 			resp.Body.Close()
 			if err != nil || resp.StatusCode != http.StatusOK {
 				continue

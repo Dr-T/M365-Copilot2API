@@ -184,7 +184,7 @@ func (s *settingsStore) save(v runtimeSettings) error {
 	if e := os.MkdirAll(filepath.Dir(s.path), 0700); e != nil {
 		return e
 	}
-	if e := os.WriteFile(s.path, b, 0600); e != nil {
+	if e := writeFileAtomic(s.path, b, 0600); e != nil {
 		return e
 	}
 	s.mu.Lock()

@@ -28,10 +28,20 @@ type Cache struct {
 }
 
 type Store struct {
-	mu      sync.Mutex
-	path    string
-	data    Cache
-	nextIdx int
+	mu       sync.Mutex
+	path     string
+	data     Cache
+	nextIdx  int
+	inflight map[string]*inflightRefresh
+}
+
+// inflightRefresh coalesces concurrent EnsureValid refreshes for the same
+// account: AAD refresh tokens can only be redeemed once, so a stampede of
+// concurrent requests must not each try Refresh().
+type inflightRefresh struct {
+	done chan struct{}
+	acc  AccountToken
+	err  error
 }
 
 func CachePath() string {
@@ -97,7 +107,15 @@ func (s *Store) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, b, 0o600)
+	return atomicWrite(s.path, b, 0o600)
+}
+
+func atomicWrite(path string, b []byte, perm os.FileMode) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func (s *Store) List() []AccountToken {
@@ -221,6 +239,26 @@ func (s *Store) EnsureValid(id string) (AccountToken, error) {
 		s.mu.Unlock()
 		return acc, fmtExpired()
 	}
+	return s.refreshInflight(acc)
+}
+
+// refreshInflight runs the AAD token refresh exactly once per account; waiters
+// block on the shared flight instead of redeeming the one-time refresh token
+// themselves. The winner's outcome is broadcast to all waiters.
+func (s *Store) refreshInflight(acc AccountToken) (AccountToken, error) {
+	s.mu.Lock()
+	if s.inflight == nil {
+		s.inflight = map[string]*inflightRefresh{}
+	}
+	if f, ok := s.inflight[acc.ID]; ok {
+		s.mu.Unlock()
+		<-f.done
+		return f.acc, f.err
+	}
+	f := &inflightRefresh{done: make(chan struct{})}
+	s.inflight[acc.ID] = f
+	s.mu.Unlock()
+
 	tok, err := Refresh(acc.RefreshToken)
 	if err != nil {
 		acc.Status = "expired"
@@ -233,21 +271,27 @@ func (s *Store) EnsureValid(id string) (AccountToken, error) {
 			}
 		}
 		s.mu.Unlock()
-		return acc, err
+		f.acc, f.err = acc, err
+	} else {
+		if tok.Email == "" {
+			tok.Email = acc.Email
+		}
+		if tok.DisplayName == "" {
+			tok.DisplayName = acc.DisplayName
+		}
+		if tok.HomeOID == "" {
+			tok.HomeOID = firstNonEmpty(acc.OID, acc.ID)
+		}
+		if tok.TenantID == "" {
+			tok.TenantID = acc.TID
+		}
+		f.acc, f.err = s.Upsert(tok)
 	}
-	if tok.Email == "" {
-		tok.Email = acc.Email
-	}
-	if tok.DisplayName == "" {
-		tok.DisplayName = acc.DisplayName
-	}
-	if tok.HomeOID == "" {
-		tok.HomeOID = firstNonEmpty(acc.OID, acc.ID)
-	}
-	if tok.TenantID == "" {
-		tok.TenantID = acc.TID
-	}
-	return s.Upsert(tok)
+	close(f.done)
+	s.mu.Lock()
+	delete(s.inflight, acc.ID)
+	s.mu.Unlock()
+	return f.acc, f.err
 }
 
 func fmtExpired() error {

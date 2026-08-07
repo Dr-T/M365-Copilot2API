@@ -1,4 +1,4 @@
-﻿package web
+package web
 
 import (
 	"crypto/sha256"
@@ -43,7 +43,10 @@ type sessionResolver struct {
 	byContext   map[string]string // contextFingerprint -> sessionID
 	ttl         time.Duration
 	contextTTL  time.Duration
+	maxSessions int
 }
+
+const defaultMaxSessions = 1000
 
 func openSessionResolver() *sessionResolver {
 	// 闂茬疆 2 灏忔椂鍗宠涓鸿繃鏈燂紙鐢ㄦ埛锛? 灏忔椂涓嶆椿璺冨凡缁忕畻涔咃級銆備細璇濊繃鏈熷悗
@@ -73,6 +76,7 @@ func openSessionResolver() *sessionResolver {
 		byContext:   map[string]string{},
 		ttl:         ttl,
 		contextTTL:  contextTTL,
+		maxSessions: defaultMaxSessions,
 	}
 	sr.loadLocked()
 	return sr
@@ -99,7 +103,7 @@ func (sr *sessionResolver) saveLocked() {
 		list = append(list, s)
 	}
 	b, _ := json.MarshalIndent(list, "", "  ")
-	_ = os.WriteFile(sr.path, b, 0o600)
+	_ = writeFileAtomic(sr.path, b, 0o600)
 }
 
 func (sr *sessionResolver) reindexLocked(s sessionBinding) {
@@ -119,17 +123,34 @@ func (sr *sessionResolver) evictLocked() {
 	now := time.Now().UTC()
 	for id, s := range sr.sessions {
 		if now.Sub(s.LastUsedAt) > sr.ttl {
-			delete(sr.sessions, id)
-			if sr.byUserField[s.UserField] == id {
-				delete(sr.byUserField, s.UserField)
-			}
-			if sr.byIPFinger[s.IPFingerprint] == id {
-				delete(sr.byIPFinger, s.IPFingerprint)
-			}
-			if sr.byContext[s.ContextFinger] == id {
-				delete(sr.byContext, s.ContextFinger)
-			}
+			sr.dropLocked(id, s)
 		}
+	}
+	if len(sr.sessions) > sr.maxSessions {
+		// Bound memory by dropping the least recently used sessions.
+		ids := make([]string, 0, len(sr.sessions))
+		last := make(map[string]time.Time, len(sr.sessions))
+		for id, s := range sr.sessions {
+			ids = append(ids, id)
+			last[id] = s.LastUsedAt
+		}
+		sort.Slice(ids, func(i, j int) bool { return last[ids[i]].Before(last[ids[j]]) })
+		for _, id := range ids[:len(sr.sessions)-sr.maxSessions] {
+			sr.dropLocked(id, sr.sessions[id])
+		}
+	}
+}
+
+func (sr *sessionResolver) dropLocked(id string, s sessionBinding) {
+	delete(sr.sessions, id)
+	if sr.byUserField[s.UserField] == id {
+		delete(sr.byUserField, s.UserField)
+	}
+	if sr.byIPFinger[s.IPFingerprint] == id {
+		delete(sr.byIPFinger, s.IPFingerprint)
+	}
+	if sr.byContext[s.ContextFinger] == id {
+		delete(sr.byContext, s.ContextFinger)
 	}
 }
 
@@ -406,6 +427,7 @@ func toolCallEqual(x, y map[string]any) bool {
 func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, body *oaiReq, r *http.Request) {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
+	sr.evictLocked()
 
 	now := time.Now().UTC()
 	explicitID := r.Header.Get("X-M365-Session-Id")

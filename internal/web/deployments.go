@@ -67,7 +67,7 @@ func (s *deploymentStore) save() error {
 	if e != nil {
 		return e
 	}
-	return os.WriteFile(s.path, b, 0600)
+	return writeFileAtomic(s.path, b, 0600)
 }
 func randomState() string {
 	b := make([]byte, 24)

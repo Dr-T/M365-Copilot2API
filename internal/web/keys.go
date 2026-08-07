@@ -49,7 +49,7 @@ func (s *apiKeyStore) save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.Path, b, 0600)
+	return writeFileAtomic(s.Path, b, 0600)
 }
 func keyHash(k string) string { h := sha256.Sum256([]byte(k)); return hex.EncodeToString(h[:]) }
 func (s *apiKeyStore) create(name string) (apiKeyRecord, string, error) {

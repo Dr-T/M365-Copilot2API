@@ -54,7 +54,7 @@ func saveAdminPassword(password string) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
 		return err
 	}
-	return os.WriteFile(p, []byte(password+"\n"), 0600)
+	return writeFileAtomic(p, []byte(password+"\n"), 0600)
 }
 func clientIP(r *http.Request) string {
 	// Trust proxy headers only when the direct peer is loopback (normal local reverse-proxy deployment).

@@ -57,6 +57,9 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 	w.Header().Set("X-Accel-Buffering", "no")
 	flusher, _ := w.(http.Flusher)
 	emit := func(name string, v any) {
+		if r.Context().Err() != nil {
+			return
+		}
 		writeSSE(w, name, v)
 		if flusher != nil {
 			flusher.Flush()
@@ -78,6 +81,9 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 	scanner := bufio.NewScanner(pr)
 	scanner.Buffer(make([]byte, 4096), 2<<20)
 	for scanner.Scan() {
+		if r.Context().Err() != nil {
+			return
+		}
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") || line == "data: [DONE]" {
 			continue
@@ -316,7 +322,8 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 	writeResponsesResult(w, firstNonEmpty(body.Model, "m365-copilot"), body.Stream, out)
 }
 
-func responsesOutputHasContent(src map[string]any) bool {	msg, _ := openAIChoice(src)
+func responsesOutputHasContent(src map[string]any) bool {
+	msg, _ := openAIChoice(src)
 	if msg == nil {
 		return false
 	}

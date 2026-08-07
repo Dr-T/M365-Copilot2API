@@ -41,7 +41,7 @@ func openSessionStore() *sessionStore {
 func (s *sessionStore) saveLocked() {
 	b, _ := json.MarshalIndent(s.data, "", "  ")
 	_ = os.MkdirAll(filepath.Dir(s.path), 0o700)
-	_ = os.WriteFile(s.path, b, 0o600)
+	_ = writeFileAtomic(s.path, b, 0o600)
 }
 
 func (s *sessionStore) list() []conversation {
@@ -96,10 +96,10 @@ type userSession struct {
 }
 
 type userSessionStore struct {
-	mu      sync.Mutex
-	path    string
-	data    map[string]userSession
-	ttl     time.Duration
+	mu   sync.Mutex
+	path string
+	data map[string]userSession
+	ttl  time.Duration
 }
 
 func openUserSessionStore(ttl time.Duration) *userSessionStore {
@@ -118,7 +118,7 @@ func openUserSessionStore(ttl time.Duration) *userSessionStore {
 func (s *userSessionStore) saveLocked() {
 	b, _ := json.MarshalIndent(s.data, "", "  ")
 	_ = os.MkdirAll(filepath.Dir(s.path), 0o700)
-	_ = os.WriteFile(s.path, b, 0o600)
+	_ = writeFileAtomic(s.path, b, 0o600)
 }
 
 func (s *userSessionStore) evictLocked() {

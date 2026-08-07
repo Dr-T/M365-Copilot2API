@@ -188,8 +188,8 @@ func activeMessages(messages []oaiMsg) []oaiMsg {
 	return messages[last:]
 }
 func completionEvidenceAllows(answer string, l agentLedger) bool {
-	if len(l.Pending) == 0 && len(l.Completed) == 0 {
-		return true
+	if len(l.Pending) > 0 {
+		return false
 	}
 	low := strings.ToLower(answer)
 	failureKeywords := []string{"cannot confirm", "not confirmed", "unable to confirm", "no tool result", "not completed", "failed", "i cannot", "i'm unable", "i'm not able", "i don't have", "i don't currently", "i apologize", "cannot", "unable", "not able", "could not", "was not able", "does not have", "do not have", "not available", "not supported", "can't", "won't"}
@@ -200,25 +200,16 @@ func completionEvidenceAllows(answer string, l agentLedger) bool {
 			break
 		}
 	}
-	if len(l.Pending) > 0 {
-		if hasFailure {
-			return true
-		}
-		if !unsupportedSuccess.MatchString(answer) {
-			return true
-		}
-		return true
-	}
 	if len(l.Completed) > 0 {
-		return true
+		return !hasFailure
 	}
-	if !unsupportedSuccess.MatchString(answer) {
-		return true
+	// No tool results at all: an unsupported "success" claim without any tool
+	// evidence must not pass the completion guard. An explicit inability to
+	// confirm is the only unverified case that may pass.
+	if unsupportedSuccess.MatchString(answer) {
+		return false
 	}
-	if hasFailure {
-		return true
-	}
-	return false
+	return true
 }
 func completedCallIDs(l agentLedger) []string {
 	o := make([]string, 0, len(l.Completed))

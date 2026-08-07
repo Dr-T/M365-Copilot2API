@@ -154,7 +154,7 @@ func (s *Server) Routes() http.Handler {
 
 func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/admin/login" || r.URL.Path == "/api/admin/session" || r.URL.Path == "/api/admin/change-password" || r.URL.Path == "/api/admin/logout" || r.URL.Path == "/" || r.URL.Path == "/login" || r.URL.Path == "/api/stats" || r.URL.Path == "/api/stats/reset" {
+		if r.URL.Path == "/api/admin/login" || r.URL.Path == "/api/admin/session" || r.URL.Path == "/api/admin/change-password" || r.URL.Path == "/api/admin/logout" || r.URL.Path == "/" || r.URL.Path == "/login" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -602,10 +602,6 @@ func modelTone(model string) string {
 		return "Gpt_5_4_Chat"
 	case "gpt-5.3-think-deeper":
 		return "Gpt_5_3_Chat"
-	case "quick":
-		return "Gpt_Quick"
-	case "think-deeper":
-		return "Gpt_Reasoning"
 	default:
 		return "magic"
 	}
@@ -959,9 +955,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		var pending strings.Builder
 		var streamedTools []detectedToolCall
 		first := true
-		emitText := func(part string) {
+		emitText := func(part string) error {
 			if part == "" {
-				return
+				return nil
+			}
+			if err := r.Context().Err(); err != nil {
+				return err
 			}
 			delta := map[string]any{"content": part}
 			if first {
@@ -969,8 +968,11 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				first = false
 			}
 			chunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": nil}}}
-			fmt.Fprintf(w, "data: %s\n\n", mustJSON(chunk))
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", mustJSON(chunk)); err != nil {
+				return err
+			}
 			flusher.Flush()
+			return nil
 		}
 		res, err := s.chat.ChatWithEvents(ctx, account, answerReq, func(ev chathub.StreamEvent) error {
 			if ev.Kind == "tool" && ev.ToolName != "" && len(ev.Arguments) > 0 {
@@ -989,7 +991,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				return nil
 			}
 			if i := strings.Index(v, "```"); i >= 0 {
-				emitText(v[:i])
+				if err := emitText(v[:i]); err != nil {
+					return err
+				}
 				pending.Reset()
 				pending.WriteString(v[i:])
 				return nil
@@ -1004,7 +1008,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					}
 					seen++
 				}
-				emitText(v[:cut])
+				if err := emitText(v[:cut]); err != nil {
+					return err
+				}
 				pending.Reset()
 				pending.WriteString(v[cut:])
 			}
@@ -1037,7 +1043,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			s.bindConversation(acc, &body, r, res, answerPrompt, startedAt)
 			return
 		}
-		emitText(pending.String())
+		if err := emitText(pending.String()); err != nil {
+			log.Printf("[req-trace] id=%s stage=stream_write err=%v", requestID, err)
+			return
+		}
 		fmt.Fprint(w, "data: [DONE]\n\n")
 		flusher.Flush()
 		if body.User != "" && res.ConversationID != "" {
@@ -1124,7 +1133,10 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		id := "chatcmpl-" + uuid.NewString()
 		model := firstNonEmpty(body.Model, "m365-copilot")
 		firstDelta := true
-		writeChunk := func(delta map[string]any) {
+		writeChunk := func(delta map[string]any) error {
+			if err := r.Context().Err(); err != nil {
+				return err
+			}
 			// The first SSE chunk must carry the assistant role; subsequent
 			// chunks carry content or reasoning deltas.
 			if firstDelta {
@@ -1136,18 +1148,21 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				delta = withRole
 			}
 			chunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": delta}}}
-			fmt.Fprintf(w, "data: %s\n\n", mustJSON(chunk))
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", mustJSON(chunk)); err != nil {
+				return err
+			}
 			flusher.Flush()
+			return nil
 		}
 		onDelta := func(content string) error {
 			if content != "" {
-				writeChunk(map[string]any{"content": content})
+				return writeChunk(map[string]any{"content": content})
 			}
 			return nil
 		}
 		onReasoning := func(reasoning string) error {
 			if reasoning != "" {
-				writeChunk(map[string]any{"reasoning_content": reasoning})
+				return writeChunk(map[string]any{"reasoning_content": reasoning})
 			}
 			return nil
 		}
