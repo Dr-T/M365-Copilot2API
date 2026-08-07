@@ -9,6 +9,45 @@ import (
 	"testing"
 )
 
+func TestAdminSettingsPartialPutMerges(t *testing.T) {
+	st := &settingsStore{path: filepath.Join(t.TempDir(), "settings.json"), v: defaultRuntimeSettings()}
+	s := &Server{settings: st}
+
+	// 用户只改监听地址，其余字段（如工具调用上限）未提交。
+	// 修复前整个结构体被零值覆盖，触发了"每轮工具调用数必须为 1-64"。
+	body := `{"listenAddress":"127.0.0.1:29422"}`
+	r := httptest.NewRequest(http.MethodPut, "/api/admin/settings", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+	s.adminSettings(w, r)
+	if w.Code != 200 {
+		t.Fatalf("partial PUT=%d %s", w.Code, w.Body.String())
+	}
+	got := st.get()
+	if got.ListenAddress != "127.0.0.1:29422" {
+		t.Fatalf("listenAddress not updated: %q", got.ListenAddress)
+	}
+	if got.MaxToolCallsPerTurn == 0 {
+		t.Fatal("partial PUT zeroed MaxToolCallsPerTurn; settings merge broken")
+	}
+	if got.MaxToolCallsPerTurn != defaultRuntimeSettings().MaxToolCallsPerTurn {
+		t.Fatalf("MaxToolCallsPerTurn changed: %d", got.MaxToolCallsPerTurn)
+	}
+}
+
+func TestAdminSettingsDuplicateKeysDoNotPanic(t *testing.T) {
+	// JSON 重复键是前端不该产生但可能出现的输入（如日志里错拼的字段）。
+	// 修复的 bug 是部分 PUT 零值覆盖，这里只验证这类脏输入不 panic。
+	st := &settingsStore{path: filepath.Join(t.TempDir(), "settings.json"), v: defaultRuntimeSettings()}
+	s := &Server{settings: st}
+	body := `{"listenAddress":"a:b","listenAddress":"c:d"}`
+	r := httptest.NewRequest(http.MethodPut, "/api/admin/settings", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+	s.adminSettings(w, r)
+	if w.Code != 200 {
+		t.Fatalf("duplicate-key PUT should merge&succeed, got %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestAdminSettingsHTTP(t *testing.T) {
 	st := &settingsStore{path: filepath.Join(t.TempDir(), "settings.json"), v: defaultRuntimeSettings()}
 	s := &Server{settings: st}
