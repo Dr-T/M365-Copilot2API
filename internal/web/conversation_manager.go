@@ -35,6 +35,7 @@ type conversationManager struct {
 	keepN     int
 	maxAge    time.Duration
 	whitelist map[string]bool
+	persist   *persistStore
 }
 
 type conversationPersist struct {
@@ -71,6 +72,7 @@ func openConversationManager() *conversationManager {
 		maxAge:    maxAge,
 		whitelist: map[string]bool{},
 	}
+	cm.persist = &persistStore{flush: cm.flush}
 	cm.loadLocked()
 	return cm
 }
@@ -91,13 +93,19 @@ func (cm *conversationManager) loadLocked() {
 	_ = json.Unmarshal(b, &cm.data)
 }
 
-func (cm *conversationManager) saveLocked() {
+// flush 在锁内生成快照，锁外写盘。
+func (cm *conversationManager) flush() error {
+	cm.mu.Lock()
 	p := conversationPersist{Conversations: cm.data}
 	for id := range cm.whitelist {
 		p.Whitelist = append(p.Whitelist, id)
 	}
-	b, _ := json.MarshalIndent(p, "", "  ")
-	_ = writeFileAtomic(cm.path, b, 0o600)
+	b, err := json.MarshalIndent(p, "", "  ")
+	cm.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(cm.path, b, 0o600)
 }
 
 func (cm *conversationManager) Record(conversationID, accountID, title string) {
@@ -111,7 +119,7 @@ func (cm *conversationManager) Record(conversationID, accountID, title string) {
 		LastUsedAt: now,
 		Title:      title,
 	}
-	cm.saveLocked()
+	cm.persist.markDirty()
 	log.Printf("[conversation-manager] recorded conversation %s", conversationID)
 }
 
@@ -119,14 +127,14 @@ func (cm *conversationManager) Whitelist(conversationID string) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	cm.whitelist[conversationID] = true
-	cm.saveLocked()
+	cm.persist.markDirty()
 }
 
 func (cm *conversationManager) Unwhitelist(conversationID string) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	delete(cm.whitelist, conversationID)
-	cm.saveLocked()
+	cm.persist.markDirty()
 }
 
 func (cm *conversationManager) IsWhitelisted(conversationID string) bool {
@@ -149,7 +157,7 @@ func (cm *conversationManager) Delete(conversationID string) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	delete(cm.data, conversationID)
-	cm.saveLocked()
+	cm.persist.markDirty()
 	log.Printf("[conversation-manager] deleted conversation %s", conversationID)
 }
 
@@ -215,7 +223,7 @@ func (cm *conversationManager) Cleanup() []string {
 		delete(cm.data, id)
 	}
 	if len(toDelete) > 0 {
-		cm.saveLocked()
+		cm.persist.markDirty()
 		log.Printf("[conversation-manager] cleaned up %d conversations", len(toDelete))
 	}
 	return toDelete

@@ -84,10 +84,10 @@ func requestToken(form url.Values) (TokenSet, error) {
 		return TokenSet{}, fmt.Errorf("token endpoint HTTP %d: %s: %s", resp.StatusCode, tr.Error, tr.ErrorDesc)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return TokenSet{}, fmt.Errorf("token endpoint HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return TokenSet{}, fmt.Errorf("token endpoint HTTP %d", resp.StatusCode)
 	}
 	if tr.AccessToken == "" {
-		return TokenSet{}, fmt.Errorf("token endpoint HTTP %d: empty access token: %s", resp.StatusCode, string(body))
+		return TokenSet{}, fmt.Errorf("token endpoint HTTP %d: empty access token", resp.StatusCode)
 	}
 	set := TokenSet{
 		AccessToken:  tr.AccessToken,

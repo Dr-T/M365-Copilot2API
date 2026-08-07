@@ -245,15 +245,17 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 		writeResponsesError(w, 400, "invalid_request_error", err.Error())
 		return
 	}
+	tenant := extractAPIKey(r)
 	if body.PreviousResponseID != "" {
 		s.responseMu.Lock()
-		prior := append([]oaiMsg(nil), s.responseMessages[body.PreviousResponseID]...)
+		prior, ok := s.responseMessages[tenant][body.PreviousResponseID]
+		messages := append([]oaiMsg(nil), prior.Messages...)
 		s.responseMu.Unlock()
-		if len(prior) == 0 {
+		if !ok || len(messages) == 0 {
 			writeResponsesError(w, 400, "invalid_request_error", "unknown previous_response_id")
 			return
 		}
-		o.Messages = append(prior, o.Messages...)
+		o.Messages = append(messages, o.Messages...)
 	}
 	if body.Stream {
 		s.streamResponsesAdapter(w, r, o, firstNonEmpty(body.Model, "m365-copilot"))
@@ -316,7 +318,27 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s.responseMu.Lock()
-		s.responseMessages[publicID] = stored
+		bucket := s.responseMessages[tenant]
+		if bucket == nil {
+			bucket = map[string]respHistory{}
+			s.responseMessages[tenant] = bucket
+		}
+		for k, h := range bucket {
+			if time.Since(h.At) > time.Hour {
+				delete(bucket, k)
+			}
+		}
+		if len(bucket) >= maxResponsesPerTenant {
+			var oldestKey string
+			var oldestAt time.Time
+			for k, h := range bucket {
+				if oldestKey == "" || h.At.Before(oldestAt) {
+					oldestKey, oldestAt = k, h.At
+				}
+			}
+			delete(bucket, oldestKey)
+		}
+		bucket[publicID] = respHistory{At: time.Now(), Messages: stored}
 		s.responseMu.Unlock()
 	}
 	writeResponsesResult(w, firstNonEmpty(body.Model, "m365-copilot"), body.Stream, out)

@@ -254,20 +254,30 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	var reasoningBuf strings.Builder
 
 	deadline := time.Now().Add(5 * time.Minute)
+	type wsRead struct {
+		msg []byte
+		err error
+	}
 	for time.Now().Before(deadline) {
+		_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+		// ReadMessage 阻塞期间无法响应 ctx 取消，放入独立 goroutine 由 select 联动。
+		readCh := make(chan wsRead, 1)
+		go func() {
+			_, msg, err := conn.ReadMessage()
+			readCh <- wsRead{msg: msg, err: err}
+		}()
+		var read wsRead
 		select {
 		case <-ctx.Done():
 			return Result{}, ctx.Err()
-		default:
+		case read = <-readCh:
 		}
-		_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
-		_, msg, err := conn.ReadMessage()
-		if err != nil {
+		if read.err != nil {
 			// Never convert a timeout or dropped WebSocket into a successful
 			// partial response. A response is complete only after SignalR type 3.
-			return Result{}, fmt.Errorf("ws read before completion: %w", err)
+			return Result{}, fmt.Errorf("ws read before completion: %w", read.err)
 		}
-		for _, part := range strings.Split(string(msg), rs) {
+		for _, part := range strings.Split(string(read.msg), rs) {
 			part = strings.TrimSpace(part)
 			if part == "" {
 				continue
@@ -437,6 +447,9 @@ func (c *Client) uploadAttachments(ctx context.Context, acc Account, conversatio
 		// For non-data URLs, download the image first
 		imageData := a.URL
 		if !strings.HasPrefix(a.URL, "data:") {
+			if err := validateRemoteDownloadURL(a.URL); err != nil {
+				return err
+			}
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.URL, nil)
 			if err != nil {
 				continue

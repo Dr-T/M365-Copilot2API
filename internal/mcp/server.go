@@ -68,6 +68,7 @@ type sessionRegistry struct {
 
 type session struct {
 	id       string
+	providerMu sync.RWMutex
 	provider ToolProvider
 	created  time.Time
 	msgCh    chan json.RawMessage
@@ -194,7 +195,9 @@ func HandleMessage(w http.ResponseWriter, r *http.Request) {
 func SetSessionTools(sessionID string, provider ToolProvider) {
 	sess := GlobalRegistry.getSession(sessionID)
 	if sess != nil {
+		sess.providerMu.Lock()
 		sess.provider = provider
+		sess.providerMu.Unlock()
 	}
 }
 
@@ -232,23 +235,29 @@ func handleRPC(ctx context.Context, sess *session, req *jsonRPCRequest) *jsonRPC
 			"serverInfo":      map[string]any{"name": "m365-copilot2api", "version": "0.1.0"},
 		})
 	case "tools/list":
-	   // First check session-specific tools, then fall back to global registry
-	   var tools []Tool
-	   if sess.provider != nil {
-	    t, err := sess.provider.ListTools(ctx)
-	    if err == nil && len(t) > 0 {
-	     tools = t
-	    }
-	   }
-	   if len(tools) == 0 {
-	    tools = GlobalToolRegistry.ListTools()
-	   }
-	   if tools == nil {
-	    tools = []Tool{}
-	   }
-	   return jsonRPCResult(req.ID, map[string]any{"tools": tools})
+		// First check session-specific tools, then fall back to global registry
+		sess.providerMu.RLock()
+		provider := sess.provider
+		sess.providerMu.RUnlock()
+		var tools []Tool
+		if provider != nil {
+			t, err := provider.ListTools(ctx)
+			if err == nil && len(t) > 0 {
+				tools = t
+			}
+		}
+		if len(tools) == 0 {
+			tools = GlobalToolRegistry.ListTools()
+		}
+		if tools == nil {
+			tools = []Tool{}
+		}
+		return jsonRPCResult(req.ID, map[string]any{"tools": tools})
 	case "tools/call":
-		if sess.provider == nil {
+		sess.providerMu.RLock()
+		provider := sess.provider
+		sess.providerMu.RUnlock()
+		if provider == nil {
 			return newRPCError(req.ID, -32603, "no tools available")
 		}
 		var params struct {
@@ -258,7 +267,7 @@ func handleRPC(ctx context.Context, sess *session, req *jsonRPCRequest) *jsonRPC
 		if err := json.Unmarshal(req.Params, &params); err != nil {
 			return newRPCError(req.ID, -32602, "invalid params: "+err.Error())
 		}
-		result, err := sess.provider.CallTool(ctx, params.Name, params.Arguments)
+		result, err := provider.CallTool(ctx, params.Name, params.Arguments)
 		if err != nil {
 			return jsonRPCResult(req.ID, map[string]any{
 				"content": []map[string]any{{"type": "text", "text": fmt.Sprintf("error: %v", err)}},

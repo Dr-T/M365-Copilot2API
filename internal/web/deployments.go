@@ -36,14 +36,7 @@ type deploymentStore struct {
 	Items []deployment `json:"items"`
 }
 
-var deployments *deploymentStore
-var cloudflareAPIBase = "https://api.cloudflare.com/client/v4"
-var workerNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
-
-func openDeployments() *deploymentStore {
-	if deployments != nil {
-		return deployments
-	}
+var openDeployments = sync.OnceValue(func() *deploymentStore {
 	dir := os.Getenv("M365_DATA_DIR")
 	if dir == "" {
 		h, _ := os.UserHomeDir()
@@ -54,9 +47,12 @@ func openDeployments() *deploymentStore {
 	if e == nil {
 		_ = json.Unmarshal(b, s)
 	}
-	deployments = s
 	return s
-}
+})
+var cloudflareAPIBase = "https://api.cloudflare.com/client/v4"
+var workerNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+var deploymentHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
 func (s *deploymentStore) save() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -167,7 +163,7 @@ func deployCloudflare(ctx context.Context, account, name, token string) (deploym
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/javascript")
-	resp, e := http.DefaultClient.Do(req)
+	resp, e := deploymentHTTPClient.Do(req)
 	if e != nil {
 		return deployment{}, e
 	}
@@ -183,7 +179,7 @@ func deployCloudflare(ctx context.Context, account, name, token string) (deploym
 		return deployment{}, qe
 	}
 	q.Header.Set("Authorization", "Bearer "+token)
-	qr, qe := http.DefaultClient.Do(q)
+	qr, qe := deploymentHTTPClient.Do(q)
 	if qe != nil {
 		return deployment{}, qe
 	}
@@ -226,7 +222,7 @@ func (s *Server) deploymentCheck(w http.ResponseWriter, r *http.Request) {
 	st.mu.Unlock()
 	start := time.Now()
 	req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, strings.TrimRight(target, "/")+"/health", nil)
-	resp, e := http.DefaultClient.Do(req)
+	resp, e := deploymentHTTPClient.Do(req)
 	lat := time.Since(start).Milliseconds()
 	st.mu.Lock()
 	if e != nil {

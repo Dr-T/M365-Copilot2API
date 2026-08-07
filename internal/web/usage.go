@@ -3,7 +3,6 @@ package web
 import (
 	"bufio"
 	"encoding/json"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -32,6 +31,8 @@ type usageLog struct {
 	mu      sync.Mutex
 	Path    string
 	records []UsageRecord
+	pending []UsageRecord
+	persist *persistStore
 }
 
 var globalUsage = &usageLog{}
@@ -47,6 +48,7 @@ func openUsageLog() *usageLog {
 		p = filepath.Join(dir, "usage.jsonl")
 	}
 	s := &usageLog{Path: p}
+	s.persist = &persistStore{flush: s.flush}
 	_ = os.MkdirAll(filepath.Dir(p), 0700)
 	s.load()
 	return s
@@ -79,16 +81,40 @@ func (s *usageLog) record(rec UsageRecord) {
 	s.mu.Lock()
 	s.records = append(s.records, rec)
 	s.trim()
+	s.pending = append(s.pending, rec)
 	s.mu.Unlock()
+	s.persist.markDirty()
+}
+
+// flush 批量追加本次累积的记录，锁外写盘。
+func (s *usageLog) flush() error {
+	s.mu.Lock()
+	pending := s.pending
+	s.pending = nil
+	s.mu.Unlock()
+	if len(pending) == 0 {
+		return nil
+	}
+	var buf []byte
+	for _, rec := range pending {
+		if b, err := json.Marshal(rec); err == nil {
+			buf = append(buf, b...)
+			buf = append(buf, '\n')
+		}
+	}
 	f, err := os.OpenFile(s.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
-		log.Printf("[usage] append failed: %v", err)
-		return
+		return err
 	}
 	defer f.Close()
-	if b, err := json.Marshal(rec); err == nil {
-		_, _ = f.Write(append(b, '\n'))
+	_, err = f.Write(buf)
+	if err != nil {
+		s.mu.Lock()
+		s.pending = append(pending, s.pending...)
+		s.mu.Unlock()
+		return err
 	}
+	return f.Sync()
 }
 
 func (s *usageLog) snapshot(days int) map[string]any {

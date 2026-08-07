@@ -43,19 +43,42 @@ func openDebugStore() *debugStore {
 	}
 	return &debugStore{path: p}
 }
+var sensitiveKeys = map[string]bool{
+	"api_key": true, "apikey": true, "apiKey": true, "authorization": true,
+	"access_token": true, "accessToken": true, "refresh_token": true, "refreshToken": true,
+	"client_secret": true, "clientSecret": true, "password": true, "current_password": true,
+	"new_password": true, "token": true, "bearer": true, "session_key": true,
+	"secret": true, "next_token": true, "pkce_verifier": true, "code_verifier": true,
+}
+
 func redactBody(b []byte) any {
 	var v any
 	if json.Unmarshal(b, &v) != nil {
 		return string(b)
 	}
-	if m, ok := v.(map[string]any); ok {
-		for _, k := range []string{"api_key", "apiKey", "authorization", "access_token", "accessToken"} {
-			if _, yes := m[k]; yes {
-				m[k] = "[redacted]"
+	redactValue(v)
+	return v
+}
+
+func redactValue(v any) {
+	switch x := v.(type) {
+	case map[string]any:
+		for k, val := range x {
+			if sensitiveKeys[strings.ToLower(k)] {
+				if _, isNested := val.(map[string]any); isNested {
+					redactValue(val)
+				} else {
+					x[k] = "[redacted]"
+				}
+			} else {
+				redactValue(val)
 			}
 		}
+	case []any:
+		for _, e := range x {
+			redactValue(e)
+		}
 	}
-	return v
 }
 func debugLevel(status int) string {
 	if status >= 500 {

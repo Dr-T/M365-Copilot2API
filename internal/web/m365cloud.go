@@ -145,12 +145,12 @@ func (c *M365CloudClient) doAPI(action string, payload map[string]any) (map[stri
 
 	ct := resp.Header.Get("Content-Type")
 	if ct != "" && !strings.HasPrefix(ct, "application/json") {
-		return nil, fmt.Errorf("unexpected content type: %s, body: %s", resp.Header.Get("Content-Type"), string(body[:min(100, len(body))]))
+		return nil, fmt.Errorf("unexpected content type from m365 endpoint: %s", resp.Header.Get("Content-Type"))
 	}
 
 	var result map[string]any
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("parse response: %w, body: %s", err, string(body[:min(200, len(body))]))
+		return nil, fmt.Errorf("parse m365 response: %w", err)
 	}
 
 	return result, nil
@@ -273,13 +273,6 @@ func (s stringReader) Read(p []byte) (int, error) {
 		return n, io.EOF
 	}
 	return n, nil
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 var m365CloudClient *M365CloudClient

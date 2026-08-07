@@ -150,6 +150,9 @@ func TestResolverPersistsHistoryAcrossReload(t *testing.T) {
 			{Role: "assistant", Content: "persisted answer"},
 		}},
 		httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil))
+	if err := sr1.persist.flushNowBlocking(); err != nil {
+		t.Fatal(err)
+	}
 
 	// 模拟重启：重新打开同一缓存文件，历史仍在 → 前缀仍可命中。
 	sr2 := openSessionResolver()

@@ -48,8 +48,15 @@ type Server struct {
 	debug               *debugStore
 	settings            *settingsStore
 	responseMu          sync.Mutex
-	responseMessages    map[string][]oaiMsg
+	responseMessages    map[string]map[string]respHistory
 	usage               *usageLog
+}
+
+const maxResponsesPerTenant = 256
+
+type respHistory struct {
+	At       time.Time
+	Messages []oaiMsg
 }
 
 func New() (*Server, error) {
@@ -83,7 +90,7 @@ func New() (*Server, error) {
 		apiKeys:             openAPIKeys(),
 		debug:               openDebugStore(),
 		settings:            openSettingsStore(),
-		responseMessages:    map[string][]oaiMsg{},
+		responseMessages:    map[string]map[string]respHistory{},
 		usage:               openUsageLog(),
 	}, nil
 }
@@ -149,7 +156,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/v1/messages", s.anthropicMessages)
 	m.HandleFunc("/v1/images/generations", s.imageGenerations)
 	m.HandleFunc("/", s.rootPage)
-	return requestID(httpTrace(securityHeaders(s.adminMiddleware(s.debugMiddleware(m)))))
+	return recoverPanics(requestID(httpTrace(securityHeaders(s.adminMiddleware(s.debugMiddleware(m))))))
 }
 
 func (s *Server) adminMiddleware(next http.Handler) http.Handler {
@@ -209,6 +216,17 @@ func (s *Server) validAdminSession(r *http.Request) bool {
 	return true
 }
 
+const maxAdminSessions = 4096
+
+// pruneAdminSessions drops expired entries; callers must hold s.mu.
+func pruneAdminSessions(m map[string]time.Time, now time.Time) {
+	for k, exp := range m {
+		if now.After(exp) {
+			delete(m, k)
+		}
+	}
+}
+
 func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
@@ -242,7 +260,19 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	token := base64.RawURLEncoding.EncodeToString(b)
 	s.mu.Lock()
-	s.adminSessions[token] = time.Now().Add(24 * time.Hour)
+	pruneAdminSessions(s.adminSessions, now)
+	if len(s.adminSessions) >= maxAdminSessions {
+		// Evict the oldest entry to keep the map bounded.
+		var oldest string
+		var oldestExp time.Time
+		for k, exp := range s.adminSessions {
+			if oldest == "" || exp.Before(oldestExp) {
+				oldest, oldestExp = k, exp
+			}
+		}
+		delete(s.adminSessions, oldest)
+	}
+	s.adminSessions[token] = now.Add(24 * time.Hour)
 	s.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{Name: "m365_admin_session", Value: token, Path: "/", HttpOnly: true, Secure: secureAdminCookie(r), SameSite: http.SameSiteLaxMode, MaxAge: 86400})
 	jsonOut(w, map[string]any{"status": "authenticated", "must_change_password": mustChange})
@@ -613,6 +643,7 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body chatBody
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return

@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
 	"m365-copilot2api/internal/outbound"
 	"m365-copilot2api/internal/web"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 )
 
@@ -33,5 +37,19 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 		WriteTimeout:      0, // streaming endpoints need an open-ended write window.
 	}
-	log.Fatal(server.ListenAndServe())
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("graceful shutdown: %v", err)
+		}
+	}()
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal(err)
+	}
+	web.StopPersistLoop()
+	log.Println("shutdown complete")
 }

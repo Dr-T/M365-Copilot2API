@@ -23,9 +23,16 @@ type apiKeyRecord struct {
 	Revoked    bool       `json:"revoked"`
 }
 type apiKeyStore struct {
-	mu   sync.Mutex
-	Path string
-	Keys []apiKeyRecord `json:"keys"`
+	mu      sync.Mutex
+	Path    string
+	Keys    []apiKeyRecord `json:"keys"`
+	persist *persistStore
+}
+
+func newAPIKeyStore(path string) *apiKeyStore {
+	s := &apiKeyStore{Path: path}
+	s.persist = &persistStore{flush: s.flush}
+	return s
 }
 
 func openAPIKeys() *apiKeyStore {
@@ -34,19 +41,33 @@ func openAPIKeys() *apiKeyStore {
 		h, _ := os.UserHomeDir()
 		p = filepath.Join(h, ".config", "m365-copilot2api", "api-keys.json")
 	}
-	s := &apiKeyStore{Path: p}
+	s := newAPIKeyStore(p)
 	b, e := os.ReadFile(p)
-	if e == nil {
-		_ = json.Unmarshal(b, s)
+	if e == nil && json.Unmarshal(b, s) == nil {
+		migrated := false
+		for i := range s.Keys {
+			if s.Keys[i].Raw != "" {
+				if s.Keys[i].Hash == "" {
+					s.Keys[i].Hash = keyHash(s.Keys[i].Raw)
+				}
+				s.Keys[i].Raw = ""
+				migrated = true
+			}
+		}
+		if migrated {
+			_ = s.flush()
+		}
 	}
 	return s
 }
-func (s *apiKeyStore) save() error {
-	if err := os.MkdirAll(filepath.Dir(s.Path), 0700); err != nil {
+func (s *apiKeyStore) flush() error {
+	s.mu.Lock()
+	b, err := json.MarshalIndent(s, "", "  ")
+	s.mu.Unlock()
+	if err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.Path), 0700); err != nil {
 		return err
 	}
 	return writeFileAtomic(s.Path, b, 0600)
@@ -58,16 +79,20 @@ func (s *apiKeyStore) create(name string) (apiKeyRecord, string, error) {
 		return apiKeyRecord{}, "", e
 	}
 	raw := "m365_" + hex.EncodeToString(b)
-	r := apiKeyRecord{ID: hex.EncodeToString(b[:8]), Name: name, Prefix: raw[:12], Hash: keyHash(raw), Raw: raw, CreatedAt: time.Now()}
+	r := apiKeyRecord{ID: hex.EncodeToString(b[:8]), Name: name, Prefix: raw[:12], Hash: keyHash(raw), CreatedAt: time.Now()}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.Keys = append(s.Keys, r)
-	if err := s.save(); err != nil {
-		s.Keys = s.Keys[:len(s.Keys)-1]
-		return apiKeyRecord{}, "", err
+	s.mu.Unlock()
+		if err := s.persist.flushNowBlocking(); err != nil {
+			s.mu.Lock()
+			s.Keys = s.Keys[:len(s.Keys)-1]
+			s.mu.Unlock()
+			return apiKeyRecord{}, "", err
+		}
+		r.Hash = ""
+		r.Raw = ""
+		return r, raw, nil
 	}
-	return r, raw, nil
-}
 func (s *apiKeyStore) list() []apiKeyRecord {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -75,28 +100,32 @@ func (s *apiKeyStore) list() []apiKeyRecord {
 	copy(out, s.Keys)
 	for i := range out {
 		out[i].Hash = ""
+		out[i].Raw = ""
 	}
 	return out
 }
 func (s *apiKeyStore) revoke(id string) (bool, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for i := range s.Keys {
 		if s.Keys[i].ID == id && !s.Keys[i].Revoked {
 			s.Keys[i].Revoked = true
-			if err := s.save(); err != nil {
+			s.mu.Unlock()
+			if err := s.persist.flushNowBlocking(); err != nil {
+				s.mu.Lock()
 				s.Keys[i].Revoked = false
+				s.mu.Unlock()
 				return false, err
 			}
 			return true, nil
 		}
 	}
+	s.mu.Unlock()
 	return false, nil
 }
 
 func (s *apiKeyStore) update(id, name string, revoked *bool) (bool, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	found := false
 	for i := range s.Keys {
 		if s.Keys[i].ID != id {
 			continue
@@ -107,24 +136,33 @@ func (s *apiKeyStore) update(id, name string, revoked *bool) (bool, error) {
 		if revoked != nil {
 			s.Keys[i].Revoked = *revoked
 		}
-		if err := s.save(); err != nil {
-			return false, err
-		}
-		return true, nil
+		found = true
+		break
 	}
-	return false, nil
+	s.mu.Unlock()
+	if !found {
+		return false, nil
+	}
+	if err := s.persist.flushNowBlocking(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 func (s *apiKeyStore) valid(raw string) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	h := keyHash(raw)
+	found := false
 	for i := range s.Keys {
 		if s.Keys[i].Hash == h && !s.Keys[i].Revoked {
 			now := time.Now()
 			s.Keys[i].LastUsedAt = &now
-			_ = s.save()
-			return true
+			found = true
+			break
 		}
 	}
-	return false
+	s.mu.Unlock()
+	if found {
+		s.persist.markDirty()
+	}
+	return found
 }

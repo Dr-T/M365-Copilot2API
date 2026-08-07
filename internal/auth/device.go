@@ -111,7 +111,7 @@ func PollDeviceCode(deviceCode string) (TokenSet, bool, error) {
 		}
 	}
 	if tr.AccessToken == "" {
-		return TokenSet{}, false, fmt.Errorf("empty access token: %s", string(body))
+		return TokenSet{}, false, fmt.Errorf("token endpoint returned no access token")
 	}
 	set := TokenSet{
 		AccessToken:  tr.AccessToken,

@@ -21,17 +21,14 @@ type PendingToolCall struct {
 // It allows the MCP server's onCall handler to block until the client
 // executes the tool and returns the result.
 type ToolCallQueue struct {
-	mu       sync.Mutex
-	cond     *sync.Cond
-	pending  []*PendingToolCall
-	nextID   int64
+	mu      sync.Mutex
+	pending []*PendingToolCall
+	nextID  int64
 }
 
 // NewToolCallQueue creates a new tool call queue.
 func NewToolCallQueue() *ToolCallQueue {
-	q := &ToolCallQueue{}
-	q.cond = sync.NewCond(&q.mu)
-	return q
+	return &ToolCallQueue{}
 }
 
 // Enqueue adds a tool call to the queue and returns a channel that will receive the result.
@@ -49,30 +46,27 @@ func (q *ToolCallQueue) Enqueue(name string, arguments map[string]any) *PendingT
 		CreatedAt: time.Now(),
 	}
 	q.pending = append(q.pending, call)
-	q.cond.Broadcast()
 	return call
 }
 
 // Dequeue waits for and returns the next pending tool call.
-// Returns nil if the context is cancelled.
+// Returns nil if the context is cancelled or no call arrives before the context deadline.
 func (q *ToolCallQueue) Dequeue(ctx context.Context) *PendingToolCall {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	for len(q.pending) == 0 {
-		ch := make(chan struct{})
-		go func() {
-			q.cond.Wait()
-			close(ch)
-		}()
+	for {
+		q.mu.Lock()
+		if len(q.pending) > 0 {
+			call := q.pending[0]
+			q.pending = q.pending[1:]
+			q.mu.Unlock()
+			return call
+		}
+		q.mu.Unlock()
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-ch:
+		case <-time.After(50 * time.Millisecond):
 		}
 	}
-	call := q.pending[0]
-	q.pending = q.pending[1:]
-	return call
 }
 
 // DequeueNonBlocking returns the next pending tool call without waiting.

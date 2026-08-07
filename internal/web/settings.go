@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -99,20 +100,16 @@ func settingsPath() string {
 	return filepath.Join(h, ".config", "m365-copilot2api", "settings.json")
 }
 
-var sharedSettings *settingsStore
-
-func openSettingsStore() *settingsStore {
-	if sharedSettings != nil {
-		return sharedSettings
-	}
+var openSettingsStore = sync.OnceValue(func() *settingsStore {
 	s := &settingsStore{path: settingsPath(), v: defaultRuntimeSettings()}
 	if b, e := os.ReadFile(s.path); e == nil {
 		_ = json.Unmarshal(b, &s.v)
 	}
-	_ = validateSettings(s.v)
-	sharedSettings = s
+	if e := validateSettings(s.v); e != nil {
+		log.Printf("[settings] invalid persisted settings: %v", e)
+	}
 	return s
-}
+})
 func firstNonEmptySetting(values ...string) string {
 	for _, v := range values {
 		if strings.TrimSpace(v) != "" {

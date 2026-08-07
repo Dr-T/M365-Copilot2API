@@ -22,6 +22,20 @@ type CacheStats struct {
 	KeyStats map[string]*KeyStat `json:"key_stats"`
 }
 
+// statsSnapshot 是无锁深拷贝快照，避免 GetStats 复制锁值。
+type statsSnapshot struct {
+	TotalRequests  int64         `json:"total_requests"`
+	CacheHits      int64         `json:"cache_hits"`
+	CacheMisses    int64         `json:"cache_misses"`
+	TokensSent     int64         `json:"tokens_sent"`
+	TokensSaved    int64         `json:"tokens_saved"`
+	ActiveSessions int           `json:"active_sessions"`
+	MaxSessionAge  time.Duration `json:"max_session_age"`
+	HitRate        float64       `json:"hit_rate"`
+	SavingsPercent float64       `json:"savings_percent"`
+	KeyStats       map[string]*KeyStat `json:"key_stats"`
+}
+
 type KeyStat struct {
 	APIKey        string    `json:"api_key"`
 	TotalRequests int64     `json:"total_requests"`
@@ -79,10 +93,26 @@ func (s *CacheStats) RecordRequest(apiKey string, hit bool, tokensSent, tokensSa
 	}
 }
 
-func (s *CacheStats) GetStats() CacheStats {
+func (s *CacheStats) GetStats() statsSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return *s
+	keys := make(map[string]*KeyStat, len(s.KeyStats))
+	for k, v := range s.KeyStats {
+		cp := *v
+		keys[k] = &cp
+	}
+	return statsSnapshot{
+		TotalRequests:  s.TotalRequests,
+		CacheHits:      s.CacheHits,
+		CacheMisses:    s.CacheMisses,
+		TokensSent:     s.TokensSent,
+		TokensSaved:    s.TokensSaved,
+		ActiveSessions: s.ActiveSessions,
+		MaxSessionAge:  s.MaxSessionAge,
+		HitRate:        s.HitRate,
+		SavingsPercent: s.SavingsPercent,
+		KeyStats:       keys,
+	}
 }
 
 func (s *CacheStats) Reset() {

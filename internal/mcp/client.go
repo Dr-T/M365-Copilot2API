@@ -34,6 +34,18 @@ func NewClient(serverURL string) *Client {
 	}
 }
 
+func (c *Client) isConnected() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.connected
+}
+
+func (c *Client) setConnected(v bool) {
+	c.mu.Lock()
+	c.connected = v
+	c.mu.Unlock()
+}
+
 // Connect establishes the SSE connection to the MCP server and initializes the session.
 func (c *Client) Connect(ctx context.Context) error {
 	c.mu.Lock()
@@ -91,7 +103,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	}
 
 	// Start background goroutine to read SSE events
-	c.connected = true
+	c.setConnected(true)
 	go c.readSSE(resp.Body)
 
 	// Initialize the session
@@ -113,7 +125,7 @@ func (c *Client) Connect(ctx context.Context) error {
 
 func (c *Client) readSSE(body io.ReadCloser) {
 	defer body.Close()
-	defer func() { c.connected = false }()
+	defer c.setConnected(false)
 	
 	scanner := bufio.NewScanner(body)
 	for scanner.Scan() {
@@ -249,11 +261,7 @@ func (c *Client) sendNotification(method string, params any) error {
 // Close closes the MCP client connection.
 func (c *Client) Close() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if !c.connected {
-		return nil
-	}
 	c.connected = false
-	close(c.done)
+	c.mu.Unlock()
 	return nil
 }

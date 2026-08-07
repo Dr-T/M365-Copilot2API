@@ -21,9 +21,10 @@ type conversation struct {
 }
 
 type sessionStore struct {
-	mu   sync.Mutex
-	path string
-	data map[string]conversation
+	mu      sync.Mutex
+	path    string
+	data    map[string]conversation
+	persist *persistStore
 }
 
 func openSessionStore() *sessionStore {
@@ -32,16 +33,25 @@ func openSessionStore() *sessionStore {
 		path = filepath.Join(os.TempDir(), "m365-copilot2api-sessions.json")
 	}
 	s := &sessionStore{path: path, data: map[string]conversation{}}
+	s.persist = &persistStore{flush: s.flush}
 	if b, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(b, &s.data)
 	}
 	return s
 }
 
-func (s *sessionStore) saveLocked() {
-	b, _ := json.MarshalIndent(s.data, "", "  ")
-	_ = os.MkdirAll(filepath.Dir(s.path), 0o700)
-	_ = writeFileAtomic(s.path, b, 0o600)
+// flush 在锁内生成快照，锁外写盘。
+func (s *sessionStore) flush() error {
+	s.mu.Lock()
+	b, err := json.MarshalIndent(s.data, "", "  ")
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+		return err
+	}
+	return writeFileAtomic(s.path, b, 0o600)
 }
 
 func (s *sessionStore) list() []conversation {
@@ -73,7 +83,7 @@ func (s *sessionStore) upsert(v conversation) conversation {
 	}
 	v.UpdatedAt = now
 	s.data[v.ID] = v
-	s.saveLocked()
+	s.persist.markDirty()
 	return v
 }
 
@@ -84,7 +94,7 @@ func (s *sessionStore) delete(id string) bool {
 		return false
 	}
 	delete(s.data, id)
-	s.saveLocked()
+	s.persist.markDirty()
 	return true
 }
 
@@ -96,10 +106,11 @@ type userSession struct {
 }
 
 type userSessionStore struct {
-	mu   sync.Mutex
-	path string
-	data map[string]userSession
-	ttl  time.Duration
+	mu      sync.Mutex
+	path    string
+	data    map[string]userSession
+	ttl     time.Duration
+	persist *persistStore
 }
 
 func openUserSessionStore(ttl time.Duration) *userSessionStore {
@@ -108,6 +119,7 @@ func openUserSessionStore(ttl time.Duration) *userSessionStore {
 		path = filepath.Join(os.TempDir(), "m365-copilot2api-user-sessions.json")
 	}
 	s := &userSessionStore{path: path, data: map[string]userSession{}, ttl: ttl}
+	s.persist = &persistStore{flush: s.flush}
 	if b, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(b, &s.data)
 	}
@@ -115,10 +127,18 @@ func openUserSessionStore(ttl time.Duration) *userSessionStore {
 	return s
 }
 
-func (s *userSessionStore) saveLocked() {
-	b, _ := json.MarshalIndent(s.data, "", "  ")
-	_ = os.MkdirAll(filepath.Dir(s.path), 0o700)
-	_ = writeFileAtomic(s.path, b, 0o600)
+// flush 在锁内生成快照，锁外写盘。
+func (s *userSessionStore) flush() error {
+	s.mu.Lock()
+	b, err := json.MarshalIndent(s.data, "", "  ")
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+		return err
+	}
+	return writeFileAtomic(s.path, b, 0o600)
 }
 
 func (s *userSessionStore) evictLocked() {
@@ -141,7 +161,7 @@ func (s *userSessionStore) Get(user string) (userSession, bool) {
 	if ok {
 		v.LastUsedAt = time.Now().UTC()
 		s.data[user] = v
-		s.saveLocked()
+		s.persist.markDirty()
 	}
 	return v, ok
 }
@@ -155,14 +175,14 @@ func (s *userSessionStore) Put(user, conversationID, sessionID, accountID string
 		AccountID:      accountID,
 		LastUsedAt:     time.Now().UTC(),
 	}
-	s.saveLocked()
+	s.persist.markDirty()
 }
 
 func (s *userSessionStore) Delete(user string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.data, user)
-	s.saveLocked()
+	s.persist.markDirty()
 }
 
 // ActiveConversations returns conversation IDs whose owning user used the

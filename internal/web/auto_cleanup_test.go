@@ -95,6 +95,9 @@ func TestWhitelistPersistsAcrossReload(t *testing.T) {
 	cm1.Record("conv-pinned", "acc1", "pinned")
 	cm1.Whitelist("conv-pinned")
 	cm1.Record("conv-plain", "acc1", "plain")
+	if err := cm1.persist.flushNowBlocking(); err != nil {
+		t.Fatal(err)
+	}
 
 	cm2 := openConversationManager()
 	if !cm2.IsWhitelisted("conv-pinned") {
@@ -120,6 +123,9 @@ func TestWhitelistPersistsWithoutOtherActivity(t *testing.T) {
 	cm1.Whitelist("conv-a")
 	cm1.Whitelist("conv-b")
 	cm1.Unwhitelist("conv-b")
+	if err := cm1.persist.flushNowBlocking(); err != nil {
+		t.Fatal(err)
+	}
 
 	cm2 := openConversationManager()
 	if !cm2.IsWhitelisted("conv-a") {

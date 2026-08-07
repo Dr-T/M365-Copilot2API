@@ -17,6 +17,7 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body chatBody
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
 	if json.NewDecoder(r.Body).Decode(&body) != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
