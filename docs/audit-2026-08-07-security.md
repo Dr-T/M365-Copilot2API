@@ -114,7 +114,19 @@
 
 ---
 
-## 修复优先级建议
+## 修复状态（2026-08-07 第二批）
+
+- **[已修复] S-2（SSRF）**：`internal/chathub/ssrf.go` `validateRemoteDownloadURL` 在附件/图片下载前解析目标，拒绝 loopback/private/link-local/multicast/CGNAT/169.254.169.254 元数据段，且仅允许 https。
+- **[已修复] S-3（响应池租户隔离）**：`s.responseMessages` 改为按 `X-API-Key`/`Bearer` 命名空间嵌套 map，`previous_response_id` 严格限定本租户；每租户 256 上限 + 1 小时过期淘汰。
+- **[已修复] H-1（API key 明文）**：新建 key 不再落盘 `raw`（仅存 hash+prefix）；`list()`/create 返回均抹去 hash/raw；读取时自动迁移历史明文记录并回写。
+- **[已修复] 低项 3（body 限制）**：`/api/chat`（`server.go`）与 `/api/chat/stream`（`stream.go`）接入 `http.MaxBytesReader` 10 MiB。
+- **[已修复] M-1.1（debug 脱敏深度）**：`redactBody` 递归脱敏敏感键（api_key/access_token/secret/password 等 16 类），覆盖嵌套请求/响应。
+- **[已修复] M-3（错误回显收敛）**：`m365cloud.go` 不再把上游 body 逐字拼进错误；`token.go`/`device.go` 错误仅保留状态码与 error 字段，不再回显原始响应体。
+- **[已修复] 低项（admin 会话无界 map）**：`adminSessions` 加 4096 上限 + 最旧淘汰泛化处理；`loginAttempts` 已有 4096 上限与 15 分钟过期清理。
+- **[未做，风险已知] H-2（M365 token 明文落盘）**：`access_token`/`refresh_token` 仍明文存于 `auth` store；加密迁移工程量较大，当前以 0600 权限缓解，建议后续 AES-GCM 改造。
+- **[跳过，不符合现状] S-1 省略**：默认口令提示已由多个入口覆盖，按用户决策不启用强制校验。
+
+## 修复优先级建议（原始评估）
 
 1. 立刻：设置 `M365_ADMIN_PASSWORD`（勿用默认值不空跑）；`/api/stats`、`/api/stats/reset` 加鉴权。
 2. 高：修复 S-2（禁远程 image 直传或加内网白名单）、S-3（会话/responses 池按 key 隔离）、H-1/H-2（明文密钥改加密落盘）。
