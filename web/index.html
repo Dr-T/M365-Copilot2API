@@ -35,7 +35,7 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 .status-dot{width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block}
 
 /* Content */
-.content{padding:28px;max-width:1200px;flex:1}
+.content{padding:28px;max-width:1200px;flex:1;margin:0 auto;width:100%}
 
 /* Stats */
 .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:24px}
@@ -43,8 +43,9 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 .stat:nth-child(2){animation-delay:.05s}.stat:nth-child(3){animation-delay:.1s}.stat:nth-child(4){animation-delay:.15s}
 .stat:hover{transform:translateY(-3px);box-shadow:var(--shadow)}
 .stat-label{color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em}
-.stat-value{display:block;font-size:26px;font-weight:700;letter-spacing:-0.03em;margin-top:4px;color:var(--text);font-variant-numeric:tabular-nums}
-.stat-unit{font-size:12px;color:var(--muted);margin-left:2px;font-weight:500}
+.stat-value{display:block;font-size:26px;font-weight:700;letter-spacing:-0.01em;margin-top:6px;color:var(--text);font-variant-numeric:tabular-nums;padding-right:2px}
+.stat-value small{font-size:12px;color:var(--muted);margin-left:4px;font-weight:500}
+.stat-unit{font-size:11px;color:var(--muted);margin-left:3px;font-weight:500;letter-spacing:0.02em}
 .stat-sub{margin-top:4px;font-size:11px;font-weight:500;color:var(--green)}
 
 /* Card */
@@ -52,6 +53,11 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 .card-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--line)}
 .card-title{font-size:13px;font-weight:600;letter-spacing:-0.01em}
 .card-body{padding:18px}
+
+/* Page heading (sections) */
+.page-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:16px}
+.page-title{font-size:20px;font-weight:750;letter-spacing:-0.02em;color:var(--text)}
+.page-sub{font-size:12px;color:var(--muted);margin-top:3px}
 
 /* Quick Actions */
 .quick-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
@@ -209,7 +215,7 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{transition-duration:.01ms!important;animation-duration:.01ms!important}}
 
 /* Usage overview card (dashboard) */
-.usage-overview{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;margin-bottom:24px;box-shadow:var(--shadow-sm)}
+.usage-overview{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;margin-bottom:24px;box-shadow:var(--shadow-sm)}
 .usage-overview-item{background:var(--surface);-webkit-backdrop-filter:blur(20px) saturate(180%);backdrop-filter:blur(20px) saturate(180%);padding:16px 20px;transition:background .3s ease;animation:slideUp .4s var(--ease-out) both}
 .usage-overview-item:nth-child(2){animation-delay:.05s}.usage-overview-item:nth-child(3){animation-delay:.1s}
 .usage-overview-top{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em}
@@ -237,6 +243,14 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 .bar-track{flex:1;height:14px;background:var(--line);border-radius:7px;overflow:hidden}
 .bar-fill{height:100%;border-radius:7px;background:linear-gradient(90deg,var(--accent),#5856d6);transition:width .5s var(--ease-out)}
 .bar-val{width:90px;flex-shrink:0;text-align:right;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.bar-fill.green{background:linear-gradient(90deg,#34c759,#30d158)}
+.bar-fill.orange{background:linear-gradient(90deg,#ff9f0a,#ffb340)}
+.bar-fill.purple{background:linear-gradient(90deg,#bf5af2,#d391f7)}
+.bar-fill.red{background:linear-gradient(90deg,#ff3b30,#ff6961)}
+.bar-fill.teal{background:linear-gradient(90deg,#30b0c7,#5ac8fa)}
+.bar-fill.pink{background:linear-gradient(90deg,#ff2d55,#ff6482)}
+.chart-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-height:120px;color:var(--muted);font-size:12px}
+.chart-empty i{width:28px;height:28px;color:var(--muted);opacity:.5}
 .pagination{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 18px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
 .usage-status{display:inline-flex;align-items:center;justify-content:center;min-width:52px;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700;background:rgba(52,199,89,.12);color:var(--green)}
 .usage-status.err{background:rgba(255,59,48,.1);color:var(--red)}
@@ -385,12 +399,17 @@ if (response.output_text) {
             <span class="usage-overview-value" id="ovTodayTok">0<small>tokens</small></span>
             <span class="usage-overview-sub" id="ovTodayReq">今日 0 次请求</span>
           </div>
+          <div class="usage-overview-item">
+            <div class="usage-overview-top"><i data-lucide="piggy-bank"></i> 缓存命中</div>
+            <span class="usage-overview-value" id="ovCacheHits">0<small>tokens</small></span>
+            <span class="usage-overview-sub" id="ovCacheRate">命中率 0%</span>
+          </div>
         </div>
         <div class="stats">
-          <div class="stat"><span class="stat-label">总会话数</span><span class="stat-value" id="stat-sessions">0</span></div>
+          <div class="stat"><span class="stat-label">总会话数</span><span class="stat-value" id="stat-sessions">0</span><span class="stat-unit">个</span></div>
           <div class="stat"><span class="stat-label">缓存命中</span><span class="stat-value" id="stat-hits">0</span><span class="stat-unit">次</span></div>
           <div class="stat"><span class="stat-label">命中率</span><span class="stat-value" id="stat-rate">0</span><span class="stat-unit">%</span></div>
-          <div class="stat"><span class="stat-label">节省 Token</span><span class="stat-value" id="stat-saved">0</span></div>
+          <div class="stat"><span class="stat-label">节省 Token</span><span class="stat-value" id="stat-saved">0</span><span class="stat-unit" style="font-size:12px">节省</span></div>
         </div>
         <div class="card">
           <div class="card-head"><span class="card-title">快捷操作</span></div>
@@ -411,12 +430,16 @@ if (response.output_text) {
             </div>
           </div>
         </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">最近请求</span><button class="btn btn-sm" onclick="showPage('usage')">查看全部</button></div>
+          <table class="table"><thead><tr><th>时间</th><th>模型</th><th>端点</th><th>Tokens</th><th>状态</th></tr></thead><tbody id="dashRecentRows"><tr><td colspan="5" class="empty">加载中...</td></tr></tbody></table>
+        </div>
       </section>
 
       <!-- Usage -->
       <section id="page-usage" style="display:none">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-          <div><h2 style="font-size:18px;font-weight:700">使用情况</h2><p style="font-size:12px;color:var(--muted);margin-top:2px">Token 用量统计与请求明细</p></div>
+        <div class="page-head">
+          <div><h2 class="page-title">使用情况</h2><p class="page-sub">Token 用量统计与请求明细</p></div>
           <div class="seg" id="usageRange">
             <button data-days="1" onclick="setUsageRange(1)">24h</button>
             <button data-days="7" class="active" onclick="setUsageRange(7)">7天</button>
@@ -434,7 +457,7 @@ if (response.output_text) {
           <div class="chart">
             <div class="chart-title">Token 使用趋势</div>
             <div class="chart-sub">按天汇总的 Token 消耗</div>
-            <svg id="ugTrend" viewBox="0 0 560 160" preserveAspectRatio="none" style="height:160px"></svg>
+            <div id="ugTrendWrap"><svg id="ugTrend" viewBox="0 0 560 160" preserveAspectRatio="none" style="height:160px"></svg></div>
           </div>
           <div class="chart">
             <div class="chart-title">模型分布</div>
@@ -461,8 +484,8 @@ if (response.output_text) {
 
       <!-- Accounts -->
       <section id="page-accounts" style="display:none">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-          <div><h2 style="font-size:18px;font-weight:700">账号管理</h2><p style="font-size:12px;color:var(--muted);margin-top:2px">授权和管理 Microsoft 账号</p></div>
+        <div class="page-head">
+          <div><h2 class="page-title">账号管理</h2><p class="page-sub">授权和管理 Microsoft 账号</p></div>
         </div>
         <div class="card" style="margin-bottom:16px">
           <div class="card-head"><span class="card-title">添加账号</span></div>
@@ -484,12 +507,12 @@ if (response.output_text) {
                 <span class="onb-step-text"><b>粘贴并确认</b><p>粘贴到下方输入框，点击"确认添加"完成授权</p></span>
               </div>
             </div>
-            <button class="btn primary" onclick="startPKCE()" style="width:100%;margin-bottom:16px;padding:12px"><i data-lucide="link" style="width:15px;height:15px"></i> 开始授权</button>
-            <div class="highlight-box warning">
+            <button class="btn primary" onclick="startPKCE()" style="width:100%;margin-bottom:12px;"><i data-lucide="link" style="width:15px;height:15px"></i> 开始授权</button>
+            <div class="highlight-box warning" style="margin-top:0;margin-bottom:16px">
               <div class="highlight-box-title"><i data-lucide="alert-circle" style="width:14px;height:14px"></i> 重要提示</div>
               <p>授权完成后请<strong>忽略弹出页面的内容</strong>，复制浏览器地址栏中完整的回调地址（包含 <code>code</code> 和 <code>state</code> 参数）。</p>
             </div>
-            <label class="form-label" style="margin-top:16px">回调地址</label>
+            <label class="form-label">回调地址</label>
             <div class="copy-field">
               <input class="form-input" id="callbackInput" placeholder="粘贴完整回调地址，例如 https://app.example.com/api/auth/callback?code=...&state=..." autocomplete="off">
               <button class="btn primary" onclick="submitCallback()" style="min-width:96px">确认添加</button>
@@ -498,15 +521,25 @@ if (response.output_text) {
           </div>
         </div>
         <div class="card">
-          <div class="card-head"><span class="card-title">已授权账号</span></div>
+          <div class="card-head">
+            <span class="card-title">已授权账号</span>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input class="form-input" id="accountSearch" placeholder="搜索账号…" style="width:180px;padding:6px 10px;font-size:12px" oninput="renderAccounts()">
+              <div class="seg" id="accountFilter">
+                <button data-f="all" class="active" onclick="setAccountFilter('all')">全部</button>
+                <button data-f="online" onclick="setAccountFilter('online')">在线</button>
+                <button data-f="offline" onclick="setAccountFilter('offline')">离线</button>
+              </div>
+            </div>
+          </div>
           <table class="table"><thead><tr><th>账号</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody id="accountRows"><tr><td colspan="4" class="empty">加载中...</td></tr></tbody></table>
         </div>
       </section>
 
       <!-- API Keys -->
       <section id="page-apikeys" style="display:none">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-          <div><h2 style="font-size:18px;font-weight:700">API Keys</h2><p style="font-size:12px;color:var(--muted);margin-top:2px">管理访问密钥</p></div>
+        <div class="page-head">
+          <div><h2 class="page-title">API Keys</h2><p class="page-sub">管理访问密钥</p></div>
           <button class="btn primary" onclick="openKeyModal()">创建 Key</button>
         </div>
         <div class="card">
@@ -517,8 +550,8 @@ if (response.output_text) {
 
       <!-- Conversations -->
       <section id="page-conversations" style="display:none">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-          <div><h2 style="font-size:18px;font-weight:700">对话管理</h2><p style="font-size:12px;color:var(--muted);margin-top:2px">查看和清理 M365 对话</p></div>
+        <div class="page-head">
+          <div><h2 class="page-title">对话管理</h2><p class="page-sub">查看和清理 M365 对话</p></div>
           <div style="display:flex;gap:8px">
             <button class="btn danger" onclick="cleanupAll()">清理全部</button>
           </div>
@@ -729,10 +762,12 @@ async function loadStats(){
   try{
     const [d,u]=await Promise.all([api('/api/stats'),api('/api/usage?days=365')]);
     const s=d.stats||{};
-    $('stat-sessions').textContent=s.total_requests||0;
-    $('stat-hits').textContent=s.cache_hits||0;
+    $('stat-sessions').textContent=(s.total_requests||0);
+    $('stat-hits').textContent=(s.cache_hits||0);
     $('stat-rate').textContent=(s.hit_rate||0).toFixed(1);
-    $('stat-saved').textContent=s.tokens_saved||0;
+    $('stat-saved').textContent=(s.tokens_saved||0);
+    $('ovCacheHits').textContent=fmtTok(s.cache_hits||0);
+    $('ovCacheRate').textContent='命中率 '+((s.hit_rate||0)).toFixed(1)+'%';
     const sum=(u.stats||{}).summary||{};
     $('ov24hTok').textContent=fmtTok(sum.last24h_tokens||0);
     $('ov24hReq').textContent=(sum.last24h_requests||0)+' 次请求';
@@ -740,14 +775,41 @@ async function loadStats(){
     $('ovTotalReq').textContent=(sum.requests||0)+' 次请求';
     $('ovTodayTok').textContent=fmtTok(sum.today_tokens||0);
     $('ovTodayReq').textContent='今日 '+(sum.today_requests||0)+' 次请求';
+    loadRecentRequests();
   }catch(e){}
 }
 
+async function loadRecentRequests(){
+  try{
+    const d=await api('/api/usage/logs?limit=6&offset=0');
+    const rows=(d.logs||[]).map(x=>`<tr>
+      <td style="font-size:12px;color:var(--muted)">${new Date(x.time).toLocaleString()}</td>
+      <td style="font-size:12px">${x.model||'-'}</td>
+      <td><span class="usage-status">${(x.endpoint||'-').replace('/v1/','')}</span></td>
+      <td><span class="token-stack"><b>${(x.input_tokens||0)+(x.output_tokens||0)+(x.cache_tokens||0)}</b></span></td>
+      <td>${x.error?'<span class="usage-status err">错误</span>':'<span class="usage-status">成功</span>'}</td>
+    </tr>`).join('');
+    $('dashRecentRows').innerHTML=rows||'<tr><td colspan="5" class="empty">暂无请求记录</td></tr>';
+  }catch(e){$('dashRecentRows').innerHTML=`<tr><td colspan="5" class="empty">暂无请求记录</td></tr>`;}
+}
+
+let _accountsCache=[],_accountFilter='all';
+function setAccountFilter(f){_accountFilter=f;document.querySelectorAll('#accountFilter button').forEach(b=>b.classList.toggle('active',b.dataset.f===f));renderAccounts();}
+function renderAccounts(){
+  const q=($('accountSearch').value||'').trim().toLowerCase();
+  const list=_accountsCache.filter(x=>{
+    if(_accountFilter==='online'&&x.status!=='online')return false;
+    if(_accountFilter==='offline'&&x.status==='online')return false;
+    if(q&&!((x.displayName||'')+' '+(x.email||'')).toLowerCase().includes(q))return false;
+    return true;
+  });
+  $('accountRows').innerHTML=list.length?list.map(x=>`<tr><td><div class="account-cell"><div class="avatar">${(x.displayName||x.email||'M')[0]}</div><div><b>${x.displayName||x.email}</b><div style="font-size:11px;color:var(--muted)">${x.email||''}</div></div></div></td><td><span class="status ${x.status==='online'?'online':'offline'}"><i></i>${x.status==='online'?'在线':'离线'}</span></td><td style="font-size:12px;color:var(--muted)">${x.updatedAt?new Date(x.updatedAt).toLocaleString():'-'}</td><td><button class="btn-sm btn danger" onclick="deleteAccount('${x.id}')">删除</button></td></tr>`).join(''):'<tr><td colspan="4" class="empty">暂无匹配账号</td></tr>';
+}
 async function loadAccounts(){
   try{
     const d=await api('/api/accounts');
-    const a=d.accounts||[];
-    $('accountRows').innerHTML=a.length?a.map(x=>`<tr><td><div class="account-cell"><div class="avatar">${(x.displayName||x.email||'M')[0]}</div><div><b>${x.displayName||x.email}</b><div style="font-size:11px;color:var(--muted)">${x.email||''}</div></div></div></td><td><span class="status ${x.status==='online'?'online':'offline'}"><i></i>${x.status==='online'?'在线':'离线'}</span></td><td style="font-size:12px;color:var(--muted)">${x.updatedAt?new Date(x.updatedAt).toLocaleString():'-'}</td><td><button class="btn-sm btn danger" onclick="deleteAccount('${x.id}')">删除</button></td></tr>`).join(''):'<tr><td colspan="4" class="empty">暂无账号</td></tr>';
+    _accountsCache=d.accounts||[];
+    renderAccounts();
   }catch(e){$('accountRows').innerHTML=`<tr><td colspan="4" class="empty">${e.message}</td></tr>`;}
 }
 
@@ -872,44 +934,60 @@ async function loadUsage(){
 }
 
 function renderTrend(trend){
-  const svg=$('ugTrend');
-  if(!trend.length){svg.innerHTML='';return;}
+  const wrap=$('ugTrendWrap');
+  if(!trend||!trend.length){if(wrap)wrap.innerHTML='<div class="chart-empty"><i data-lucide="line-chart"></i>暂无趋势数据，产生请求后自动生成</div>';try{lucide.createIcons();}catch(e){}return;}
   const W=560,H=160,P=8;
   const max=Math.max(...trend.map(t=>t.tokens),1);
-  const step=(W-2*P)/trend.length;
+  // 单一数据点用柱状图，直观显示单日用量；多点时折线 + 渐变面积
+  if(trend.length===1){
+    const t=trend[0];
+    const cw=(W-2*P)*0.55;
+    const bh=(t.tokens/max)*(H-2*P);
+    const x=P+(W-2*P-cw)/2;
+    const y=H-P-bh;
+    const html=`<svg id="ugTrend" viewBox="0 0 560 160" preserveAspectRatio="none" style="height:160px"><defs><linearGradient id="ugGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--green)" stop-opacity="0.32"/><stop offset="100%" stop-color="var(--green)" stop-opacity="0.04"/></linearGradient></defs>
+      <rect x="${x}" y="${y}" width="${cw}" height="${Math.max(bh,2)}" rx="4" fill="url(#ugGrad)" stroke="var(--green)" stroke-width="2"/>
+      <text x="${x+cw/2}" y="${H-2}" text-anchor="middle" font-size="9" fill="var(--muted)">${t.date}</text></svg>`;
+    wrap.innerHTML=html;try{lucide.createIcons();}catch(e){}return;
+  }
+  const step=(W-2*P)/(trend.length-1);
   let path='',area='';
   trend.forEach((t,i)=>{
-    const x=P+i*step+step/2;
+    const x=P+i*step;
     const y=H-P-(t.tokens/max)*(H-2*P);
     path+=(i?'L':'M')+x.toFixed(1)+' '+y.toFixed(1)+' ';
     area+=(i?'L':'M')+x.toFixed(1)+' '+(i?y.toFixed(1):(H-P))+' ';
   });
+  if(trend.length===2)path='M'+P+' '+(H-P-(trend[0].tokens/max)*(H-2*P))+' L'+(W-P)+' '+(H-P-(trend[1].tokens/max)*(H-2*P));
   area+='L'+(W-P)+' '+(H-P)+' L'+P+' '+(H-P)+' Z';
   const gid='ugGrad';
-  svg.innerHTML=`<defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--accent)" stop-opacity="0.28"/><stop offset="100%" stop-color="var(--accent)" stop-opacity="0.02"/></linearGradient></defs>
+  wrap.innerHTML=`<svg id="ugTrend" viewBox="0 0 560 160" preserveAspectRatio="none" style="height:160px"><defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--accent)" stop-opacity="0.28"/><stop offset="100%" stop-color="var(--accent)" stop-opacity="0.02"/></linearGradient></defs>
     <path d="${area}" fill="url(#${gid})"/>
     <path d="${path}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
     ${trend.map((t,i)=>{
-      const x=P+i*step+step/2;
+      const x=P+i*step;
       const y=H-P-(t.tokens/max)*(H-2*P);
       return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.6" fill="var(--accent)"><title>${t.date} · ${t.tokens.toLocaleString()} tokens</title></circle>`;
     }).join('')}
     ${trend.map((t,i)=>{
-      const x=P+i*step+step/2;
+      const x=P+i*step;
       if(i===0||i===trend.length-1||t.tokens===max)return `<text x="${x.toFixed(1)}" y="${H-2}" text-anchor="middle" font-size="9" fill="var(--muted)">${t.date}</text>`;
       return '';
-    }).join('')}`;
+    }).join('')}</svg>`;
+  try{lucide.createIcons();}catch(e){}
 }
 
 function renderBars(id,items,labelFn,valKey){
   const el=$(id);
-  if(!items.length){el.innerHTML='<div class="empty" style="padding:20px">暂无数据</div>';return;}
+  if(!items.length){el.innerHTML='<div class="chart-empty"><i data-lucide="chart-bar"></i>暂无数据</div>';try{lucide.createIcons();}catch(e){}return;}
+  const palettes=['','green','orange','purple','teal','red','pink'];
   const max=Math.max(...items.map(i=>i[valKey]),1);
   const top=items.slice(0,8);
-  el.innerHTML=top.map(i=>{
+  el.innerHTML=top.map((i,idx)=>{
     const v=i[valKey]||0;
     const lab=valKey==='requests'?(v+' req'):fmtTok(v);
-    return `<div class="bar-row"><span class="bar-name">${labelFn(i)}</span><div class="bar-track"><div class="bar-fill" style="width:${(v/max*100).toFixed(1)}%"></div></div><span class="bar-val">${lab}</span></div>`;
+    const cls=palettes[idx%palettes.length];
+    return `<div class="bar-row"><span class="bar-name">${labelFn(i)}</span><div class="bar-track"><div class="bar-fill ${cls}" style="width:${(v/max*100).toFixed(1)}%"></div></div><span class="bar-val">${lab}</span></div>`;
   }).join('');
 }
 
@@ -919,7 +997,7 @@ async function loadUsageLogs(){
     ugTotal=d.total||0;
     const rows=(d.logs||[]).map(x=>`<tr>
       <td style="font-size:12px;color:var(--muted)">${new Date(x.time).toLocaleString()}</td>
-      <td><code style="font-size:11px">${x.api_key_prefix||'-'}</code></td>
+      <td><code style="font-size:11px" title="${x.api_key_prefix||'-'}">${x.api_key_prefix||'-'}</code></td>
       <td style="font-size:12px">${x.model||'-'}</td>
       <td><span class="usage-status">${(x.endpoint||'-').replace('/v1/','')}</span></td>
       <td><span class="token-stack"><b>${(x.input_tokens||0)+(x.output_tokens||0)+(x.cache_tokens||0)}</b> 入${x.input_tokens||0}/出${x.output_tokens||0}/缓${x.cache_tokens||0}</span></td>

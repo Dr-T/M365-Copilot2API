@@ -6,11 +6,14 @@ import time
 import os
 import signal
 
-SERVER_EXE = r"D:\M365-Copilot2API\m365-copilot2api.exe"
-SERVER_DIR = r"D:\M365-Copilot2API"
-LOG_FILE = r"D:\M365-Copilot2API\server.log"
-ERR_FILE = r"D:\M365-Copilot2API\server-error.log"
-PID_FILE = r"D:\M365-Copilot2API\server.pid"
+# 基于脚本自身位置推导，克隆到任意目录都可直接用，无需改硬编码路径。
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SERVER_EXE = os.path.join(BASE_DIR, "m365-copilot2api.exe")
+SERVER_DIR = BASE_DIR
+LOG_FILE = os.path.join(BASE_DIR, "server.log")
+ERR_FILE = os.path.join(BASE_DIR, "server-error.log")
+PID_FILE = os.path.join(BASE_DIR, "server.pid")
+DATA_DIR = os.path.join(BASE_DIR, "data")
 
 def get_pid():
     try:
@@ -36,11 +39,11 @@ def start():
     admin_pw = env.get("M365_ADMIN_PASSWORD", "admin123")
     env.update({
         "M365_LISTEN": "0.0.0.0:4141",
-        "M365_DATA_DIR": r"D:\M365-Copilot2API\data",
-        "M365_CONFIG": r"D:\M365-Copilot2API\data\accounts.json",
-        "M365_TOKEN_CACHE": r"D:\M365-Copilot2API\data\token-cache.json",
-        "M365_SESSION_CACHE": r"D:\M365-Copilot2API\data\sessions.json",
-        "M365_API_KEYS": r"D:\M365-Copilot2API\data\api-keys.json",
+        "M365_DATA_DIR": os.path.join(DATA_DIR, ""),
+        "M365_CONFIG": os.path.join(DATA_DIR, "accounts.json"),
+        "M365_TOKEN_CACHE": os.path.join(DATA_DIR, "token-cache.json"),
+        "M365_SESSION_CACHE": os.path.join(DATA_DIR, "sessions.json"),
+        "M365_API_KEYS": os.path.join(DATA_DIR, "api-keys.json"),
         "M365_ADMIN_PASSWORD": admin_pw,
         "M365_CLEANUP_MODE": "keep_n",
         "M365_CLEANUP_KEEP_N": "3",
