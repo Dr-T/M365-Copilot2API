@@ -11,12 +11,12 @@ func clientPlugins(tools []Tool, mcpServerURL string) []any {
 	plugins := make([]any, 0, len(tools)+1)
 	if mcpServerURL != "" {
 		plugins = append(plugins, map[string]any{
-			"Id":                   "mcp-gateway",
-			"Source":               "MCPServer",
-			"Description":          "MCP Gateway tools",
-			"Transport":            "mcp",
-			"TransportUrl":         mcpServerURL,
-			"TransportProtocol":    "https://copilot.microsoft.com/schemas/plugins/local/transport/1.0",
+			"Id":                "mcp-gateway",
+			"Source":            "MCPServer",
+			"Description":       "MCP Gateway tools",
+			"Transport":         "mcp",
+			"TransportUrl":      mcpServerURL,
+			"TransportProtocol": "https://copilot.microsoft.com/schemas/plugins/local/transport/1.0",
 		})
 	}
 	for _, t := range tools {

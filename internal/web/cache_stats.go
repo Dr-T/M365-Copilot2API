@@ -8,29 +8,29 @@ import (
 type CacheStats struct {
 	mu sync.Mutex
 
-	TotalRequests   int64     `json:"total_requests"`
-	CacheHits       int64     `json:"cache_hits"`
-	CacheMisses     int64     `json:"cache_misses"`
-	TokensSent      int64     `json:"tokens_sent"`
-	TokensSaved     int64     `json:"tokens_saved"`
-	ActiveSessions  int       `json:"active_sessions"`
-	MaxSessionAge   time.Duration `json:"max_session_age"`
-	HitRate         float64   `json:"hit_rate"`
-	SavingsPercent  float64   `json:"savings_percent"`
+	TotalRequests  int64         `json:"total_requests"`
+	CacheHits      int64         `json:"cache_hits"`
+	CacheMisses    int64         `json:"cache_misses"`
+	TokensSent     int64         `json:"tokens_sent"`
+	TokensSaved    int64         `json:"tokens_saved"`
+	ActiveSessions int           `json:"active_sessions"`
+	MaxSessionAge  time.Duration `json:"max_session_age"`
+	HitRate        float64       `json:"hit_rate"`
+	SavingsPercent float64       `json:"savings_percent"`
 
 	// 按 API Key 统计
 	KeyStats map[string]*KeyStat `json:"key_stats"`
 }
 
 type KeyStat struct {
-	APIKey         string        `json:"api_key"`
-	TotalRequests  int64         `json:"total_requests"`
-	CacheHits      int64         `json:"cache_hits"`
-	CacheMisses    int64         `json:"cache_misses"`
-	TokensSent     int64         `json:"tokens_sent"`
-	TokensSaved    int64         `json:"tokens_saved"`
-	HitRate        float64       `json:"hit_rate"`
-	LastUsed       time.Time     `json:"last_used"`
+	APIKey        string    `json:"api_key"`
+	TotalRequests int64     `json:"total_requests"`
+	CacheHits     int64     `json:"cache_hits"`
+	CacheMisses   int64     `json:"cache_misses"`
+	TokensSent    int64     `json:"tokens_sent"`
+	TokensSaved   int64     `json:"tokens_saved"`
+	HitRate       float64   `json:"hit_rate"`
+	LastUsed      time.Time `json:"last_used"`
 }
 
 var cacheStats = &CacheStats{

@@ -51,10 +51,10 @@ func (s *Server) conversationCleanup(w http.ResponseWriter, r *http.Request) {
 	}
 	cleaned := s.conversationManager.Cleanup()
 	jsonOut(w, map[string]any{
-		"status":      "cleaned",
-		"mode":        string(s.conversationManager.Mode()),
-		"deleted":     cleaned,
-		"remaining":   len(s.conversationManager.List()),
+		"status":    "cleaned",
+		"mode":      string(s.conversationManager.Mode()),
+		"deleted":   cleaned,
+		"remaining": len(s.conversationManager.List()),
 	})
 }
 
@@ -64,7 +64,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		sessions := s.sessionResolver.ListSessions()
 		jsonOut(w, map[string]any{
 			"object": "list",
-			"data": sessions,
+			"data":   sessions,
 		})
 	case http.MethodPost:
 		var body struct {
@@ -74,20 +74,20 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		sess, ok := s.sessionResolver.GetSession(body.SessionID)
 		if !ok {
 			jsonOut(w, map[string]any{
-				"object": "session",
-				"id": body.SessionID,
-				"created": time.Now().Unix(),
+				"object":     "session",
+				"id":         body.SessionID,
+				"created":    time.Now().Unix(),
 				"expires_in": 1800,
-				"status": "created",
+				"status":     "created",
 			})
 			return
 		}
 		jsonOut(w, map[string]any{
-			"object": "session",
-			"id": sess.SessionID,
+			"object":          "session",
+			"id":              sess.SessionID,
 			"conversation_id": sess.ConversationID,
-			"created": sess.CreatedAt.Unix(),
-			"status": "active",
+			"created":         sess.CreatedAt.Unix(),
+			"status":          "active",
 		})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
