@@ -937,21 +937,20 @@ function renderTrend(trend){
   const wrap=$('ugTrendWrap');
   if(!trend||!trend.length){if(wrap)wrap.innerHTML='<div class="chart-empty"><i data-lucide="line-chart"></i>暂无趋势数据，产生请求后自动生成</div>';try{lucide.createIcons();}catch(e){}return;}
   const W=560,H=160,P=8;
+  const W=560,H=160,P=8;
   const max=Math.max(...trend.map(t=>t.tokens),1);
-  // 单一数据点用柱状图，直观显示单日用量；多点时折线 + 渐变面积
+  let path='',area='';
+  // 单点数据时取中位坐标，仍渲染折线图（一个圆点 + 日期标签），保持图表风格统一
   if(trend.length===1){
     const t=trend[0];
-    const cw=(W-2*P)*0.55;
-    const bh=(t.tokens/max)*(H-2*P);
-    const x=P+(W-2*P-cw)/2;
-    const y=H-P-bh;
-    const html=`<svg id="ugTrend" viewBox="0 0 560 160" preserveAspectRatio="none" style="height:160px"><defs><linearGradient id="ugGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--green)" stop-opacity="0.32"/><stop offset="100%" stop-color="var(--green)" stop-opacity="0.04"/></linearGradient></defs>
-      <rect x="${x}" y="${y}" width="${cw}" height="${Math.max(bh,2)}" rx="4" fill="url(#ugGrad)" stroke="var(--green)" stroke-width="2"/>
-      <text x="${x+cw/2}" y="${H-2}" text-anchor="middle" font-size="9" fill="var(--muted)">${t.date}</text></svg>`;
-    wrap.innerHTML=html;try{lucide.createIcons();}catch(e){}return;
+    const cx=W/2;
+    const cy=H-P-(t.tokens/max)*(H-2*P);
+    wrap.innerHTML=`<svg id="ugTrend" viewBox="0 0 560 160" preserveAspectRatio="none" style="height:160px">
+      <circle cx="${cx}" cy="${cy}" r="4" fill="var(--accent)"><title>${t.date} · ${t.tokens.toLocaleString()} tokens</title></circle>
+      <text x="${cx}" y="${H-2}" text-anchor="middle" font-size="9" fill="var(--muted)">${t.date}</text></svg>`;
+    try{lucide.createIcons();}catch(e){}return;
   }
   const step=(W-2*P)/(trend.length-1);
-  let path='',area='';
   trend.forEach((t,i)=>{
     const x=P+i*step;
     const y=H-P-(t.tokens/max)*(H-2*P);
