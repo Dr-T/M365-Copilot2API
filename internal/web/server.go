@@ -76,15 +76,15 @@ func New() (*Server, error) {
 		userSessions:        openUserSessionStore(sessionTTL),
 		sessionResolver:     openSessionResolver(),
 		conversationManager: openConversationManager(),
-		adminPassword:      password,
-		adminSessions:      map[string]time.Time{},
-		mustChangePassword: mustChange,
-		loginAttempts:      map[string]loginAttempt{},
-		apiKeys:            openAPIKeys(),
-		debug:              openDebugStore(),
-		settings:           openSettingsStore(),
-		responseMessages:   map[string][]oaiMsg{},
-		usage:              openUsageLog(),
+		adminPassword:       password,
+		adminSessions:       map[string]time.Time{},
+		mustChangePassword:  mustChange,
+		loginAttempts:       map[string]loginAttempt{},
+		apiKeys:             openAPIKeys(),
+		debug:               openDebugStore(),
+		settings:            openSettingsStore(),
+		responseMessages:    map[string][]oaiMsg{},
+		usage:               openUsageLog(),
 	}, nil
 }
 
@@ -973,43 +973,43 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 		res, err := s.chat.ChatWithEvents(ctx, account, answerReq, func(ev chathub.StreamEvent) error {
-		    if ev.Kind == "tool" && ev.ToolName != "" && len(ev.Arguments) > 0 {
-		     streamedTools = append(streamedTools, detectedToolCall{ID: "call_" + uuid.NewString(), Name: ev.ToolName, Arguments: ev.Arguments})
-		     return nil
-		    }
-		    if ev.Kind != "text" || ev.Text == "" {
-		     return nil
-		    }
-		    text.WriteString(ev.Text)
-		    pending.WriteString(ev.Text)
-		    v := pending.String()
-		    // If the text contains a bash block or a JSON command, don't emit it as text
-		    // It will be caught by fencedToolCalls after the stream completes
-		    if strings.Contains(v, "```bash") || strings.Contains(v, "\"command\"") {
-		     return nil
-		    }
-		    if i := strings.Index(v, "```"); i >= 0 {
-		     emitText(v[:i])
-		     pending.Reset()
-		     pending.WriteString(v[i:])
-		     return nil
-		    }
-		    if runeCount := utf8.RuneCountInString(v); runeCount > 8 {
-		     cut := 0
-		     seen := 0
-		     for i := range v {
-		      if seen == runeCount-8 {
-		       cut = i
-		       break
-		      }
-		      seen++
-		     }
-		     emitText(v[:cut])
-		     pending.Reset()
-		     pending.WriteString(v[cut:])
-		    }
-		    return nil
-		   })
+			if ev.Kind == "tool" && ev.ToolName != "" && len(ev.Arguments) > 0 {
+				streamedTools = append(streamedTools, detectedToolCall{ID: "call_" + uuid.NewString(), Name: ev.ToolName, Arguments: ev.Arguments})
+				return nil
+			}
+			if ev.Kind != "text" || ev.Text == "" {
+				return nil
+			}
+			text.WriteString(ev.Text)
+			pending.WriteString(ev.Text)
+			v := pending.String()
+			// If the text contains a bash block or a JSON command, don't emit it as text
+			// It will be caught by fencedToolCalls after the stream completes
+			if strings.Contains(v, "```bash") || strings.Contains(v, "\"command\"") {
+				return nil
+			}
+			if i := strings.Index(v, "```"); i >= 0 {
+				emitText(v[:i])
+				pending.Reset()
+				pending.WriteString(v[i:])
+				return nil
+			}
+			if runeCount := utf8.RuneCountInString(v); runeCount > 8 {
+				cut := 0
+				seen := 0
+				for i := range v {
+					if seen == runeCount-8 {
+						cut = i
+						break
+					}
+					seen++
+				}
+				emitText(v[:cut])
+				pending.Reset()
+				pending.WriteString(v[cut:])
+			}
+			return nil
+		})
 		if err != nil {
 			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
 			fmt.Fprint(w, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": upstreamError(err)}})+"\n\n")
@@ -1124,22 +1124,38 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		id := "chatcmpl-" + uuid.NewString()
 		model := firstNonEmpty(body.Model, "m365-copilot")
 		firstDelta := true
-		emit := func(content string) error {
-			delta := map[string]any{"content": content}
+		writeChunk := func(delta map[string]any) {
+			// The first SSE chunk must carry the assistant role; subsequent
+			// chunks carry content or reasoning deltas.
 			if firstDelta {
 				firstDelta = false
-				delta = map[string]any{"content": nil, "reasoning_content": "正在分析请求并准备回答……"}
+				withRole := map[string]any{"role": "assistant", "content": nil}
+				for k, v := range delta {
+					withRole[k] = v
+				}
+				delta = withRole
 			}
 			chunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": delta}}}
 			fmt.Fprintf(w, "data: %s\n\n", mustJSON(chunk))
 			flusher.Flush()
+		}
+		onDelta := func(content string) error {
+			if content != "" {
+				writeChunk(map[string]any{"content": content})
+			}
+			return nil
+		}
+		onReasoning := func(reasoning string) error {
+			if reasoning != "" {
+				writeChunk(map[string]any{"reasoning_content": reasoning})
+			}
 			return nil
 		}
 		// Commit headers immediately; the first upstream delta is then forwarded
 		// without waiting for the full ChatHub completion frame.
 		fmt.Fprintf(w, ": connected\n\n")
 		flusher.Flush()
-		res, err = s.chat.ChatWithDelta(ctx, account, answerReq, emit)
+		res, err = s.chat.ChatWithReasoning(ctx, account, answerReq, onDelta, onReasoning)
 		if err == nil {
 			fmt.Fprint(w, "data: [DONE]\n\n")
 			flusher.Flush()
@@ -1264,6 +1280,13 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 		content = parts
 	}
+	assistant := map[string]any{
+		"role":    "assistant",
+		"content": content,
+	}
+	if res.Reasoning != "" {
+		assistant["reasoning_content"] = res.Reasoning
+	}
 	// 上游 ChatHub 不返回 token 计数，按请求/回复文本本地估算填充
 	// OpenAI 要求的 usage 字段。
 	pt := EstimateTokens(prompt)
@@ -1274,14 +1297,11 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		"created": created,
 		"model":   model,
 		"choices": []map[string]any{{
-			"index": 0,
-			"message": map[string]any{
-				"role":    "assistant",
-				"content": content,
-			},
+			"index":         0,
+			"message":       assistant,
 			"finish_reason": "stop",
 		}},
-		"m365":  compatM365Metadata(res),
+		"m365": compatM365Metadata(res),
 		"usage": map[string]any{
 			"prompt_tokens":     pt,
 			"completion_tokens": ct,

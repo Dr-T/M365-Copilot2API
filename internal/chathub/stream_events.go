@@ -14,9 +14,17 @@ func classifyUpdateMessages(messages []any) []StreamEvent {
 		text, _ := m["text"].(string)
 		mt, _ := m["messageType"].(string)
 		ct, _ := m["contentType"].(string)
+		origin, _ := m["contentOrigin"].(string)
+		cot, _ := m["addToChainOfThought"].(bool)
 		kind := "text"
 		if mt == "Progress" || ct == "SearchResults" || ct == "Code" || ct == "ToolCall" {
 			kind = "progress"
+		}
+		// ChatHub marks the multi-step reasoning transcript (ChainOfThought cards)
+		// via contentOrigin and addToChainOfThought. Expose it separately so the
+		// OpenAI-compatible layer can render it as reasoning_content.
+		if origin == "ChainOfThoughtSummary" || cot {
+			kind = "reasoning"
 		}
 		name, args := extractToolFields(m)
 		if name != "" && len(args) > 0 {

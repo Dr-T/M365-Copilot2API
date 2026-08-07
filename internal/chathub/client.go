@@ -71,6 +71,7 @@ type StreamHandler func(StreamEvent) error
 
 type Result struct {
 	Text           string
+	Reasoning      string
 	ConversationID string
 	SessionID      string
 	RequestID      string
@@ -123,6 +124,19 @@ func (c *Client) ChatWithEvents(ctx context.Context, acc Account, req Request, h
 // reconstruction but are not emitted as deltas, preventing duplicate text.
 func (c *Client) ChatWithDelta(ctx context.Context, acc Account, req Request, onDelta func(string) error) (Result, error) {
 	return c.chatWithHandlers(ctx, acc, req, onDelta, nil)
+}
+
+// ChatWithReasoning is the streaming entry point used by the OpenAI-compatible
+// layer. onDelta receives answer text tokens, onReasoning receives the
+// multi-step ChainOfThought transcript that ChatHub marks with
+// contentOrigin=ChainOfThoughtSummary / addToChainOfThought=true.
+func (c *Client) ChatWithReasoning(ctx context.Context, acc Account, req Request, onDelta func(string) error, onReasoning func(string) error) (Result, error) {
+	return c.chatWithHandlers(ctx, acc, req, onDelta, func(ev StreamEvent) error {
+		if ev.Kind == "reasoning" && ev.Text != "" && onReasoning != nil {
+			return onReasoning(ev.Text)
+		}
+		return nil
+	})
 }
 
 func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request, onDelta func(string) error, onEvent StreamHandler) (Result, error) {
@@ -232,6 +246,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	var rawResult string
 	var events []json.RawMessage
 	seenStreamTools := map[string]bool{}
+	var reasoningBuf strings.Builder
 
 	deadline := time.Now().Add(5 * time.Minute)
 	for time.Now().Before(deadline) {
@@ -280,13 +295,16 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 								return Result{}, err
 							}
 						}
+					}
 
-						for _, ev := range classifyUpdateMessages(msgs) {
-							ev.Raw = eventRaw(arg)
-							if ev.Kind != "text" {
-								if err := onEvent(ev); err != nil {
-									return Result{}, err
-								}
+					for _, ev := range classifyUpdateMessages(msgs) {
+						if ev.Kind == "reasoning" {
+							reasoningBuf.WriteString(ev.Text)
+						}
+						ev.Raw = eventRaw(arg)
+						if ev.Kind != "text" && onEvent != nil {
+							if err := onEvent(ev); err != nil {
+								return Result{}, err
 							}
 						}
 					}
@@ -358,6 +376,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 				}
 				return Result{
 					Text:           text,
+					Reasoning:      reasoningBuf.String(),
 					ConversationID: req.ConversationID,
 					SessionID:      req.SessionID,
 					RequestID:      requestID,

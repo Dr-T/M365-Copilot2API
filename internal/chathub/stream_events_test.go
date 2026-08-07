@@ -16,6 +16,26 @@ func TestClassifyUpdateMessages(t *testing.T) {
 	}
 }
 
+func TestClassifyChainOfThoughtAsReasoning(t *testing.T) {
+	got := classifyUpdateMessages([]any{
+		map[string]any{"author": "bot", "text": "**搜索用户需求**\n- 查询相关文档", "messageType": "Progress", "contentOrigin": "ChainOfThoughtSummary"},
+		map[string]any{"author": "bot", "text": "使用工具查找", "messageType": "Progress", "addToChainOfThought": true},
+		map[string]any{"author": "bot", "text": "普通进度", "messageType": "Progress", "contentOrigin": "SomeOtherOrigin"},
+	})
+	if len(got) != 3 {
+		t.Fatalf("unexpected event count: %#v", got)
+	}
+	if got[0].Kind != "reasoning" || got[0].Text == "" {
+		t.Fatalf("expected reasoning, got %#v", got[0])
+	}
+	if got[1].Kind != "reasoning" {
+		t.Fatalf("expected reasoning via addToChainOfThought, got %#v", got[1])
+	}
+	if got[2].Kind != "progress" {
+		t.Fatalf("ordinary progress must stay progress, got %#v", got[2])
+	}
+}
+
 func TestExtractToolEventsNestedAndDeduped(t *testing.T) {
 	seen := map[string]bool{}
 	arg := map[string]any{"plugin": map[string]any{"functionName": "list_files", "functionArguments": map[string]any{"path": "."}}}
