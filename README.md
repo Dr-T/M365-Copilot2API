@@ -51,7 +51,7 @@ M365 Copilot2API 是一个用 Go 编写的自托管网关，把微软 365 Copilo
 ```
 ┌──────────────┐    OpenAI / Anthropic    ┌──────────────────┐    ChatHub    ┌──────────────┐
 │ Claude Code  │ ───────────────────────► │      网关         │ ────────────► │ M365 Copilot │
-│ OpenCode     │   /v1/chat/completions   │ (Go, m365-native) │  WebSocket    │  (云端对话)   │
+│ OpenCode     │   /v1/chat/completions   │ (Go, m365-copilot2api) │  WebSocket    │  (云端对话)   │
 │ 任意 OpenAI  │   /v1/messages           │  internal/web     │  internal/    │              │
 │ 客户端        │   /v1/responses          │                   │  chathub      │              │
 └──────────────┘                          └──────────────────┘               └──────────────┘
@@ -77,13 +77,13 @@ cd M365-Copilot2API
 # 设置管理员密码（可选，默认 admin123），生产环境务必设置强密码
 $env:M365_ADMIN_PASSWORD = "your_strong_password"
 
-go build -o m365-native.exe ./cmd/server
+go build -o m365-copilot2api.exe ./cmd/server
 ```
 
 ```bash
 # Linux / macOS
 export M365_ADMIN_PASSWORD=your_strong_password
-go build -o m365-native ./cmd/server
+go build -o m365-copilot2api ./cmd/server
 ```
 
 ### 启动
@@ -98,7 +98,7 @@ python manage.py err      # 查看错误日志
 python manage.py stop     # 停止服务
 ```
 
-> `manage.py` 内部硬编码了仓库绝对路径（`D:\M365-Copilot2API\m365-native.exe` 等），克隆到其他目录时请先修改脚本顶部的路径常量，并确保先完成编译。
+> `manage.py` 内部硬编码了仓库绝对路径（`D:\M365-Copilot2API\m365-copilot2api.exe` 等），克隆到其他目录时请先修改脚本顶部的路径常量，并确保先完成编译。
 
 直接运行二进制则默认只监听内网 `http://127.0.0.1:4141`，可通过环境变量 `M365_LISTEN` 覆盖。
 
@@ -133,8 +133,8 @@ docker compose up -d --build
 |------|--------|------|
 | `M365_LISTEN` | `127.0.0.1:4141` | 监听地址（`manage.py` 与 Docker 内置为 `0.0.0.0:4141`） |
 | `M365_ADMIN_PASSWORD` | `admin123` | 管理员密码（首次登录强制修改） |
-| `M365_DATA_DIR` | `~/.config/m365-native` | 数据目录（token、密钥、用量等集中存储；`manage.py` 内置为 `data/`） |
-| `M365_CONFIG` | `~/.config/m365-native/accounts.json` | 账号配置文件路径 |
+| `M365_DATA_DIR` | `~/.config/m365-copilot2api` | 数据目录（token、密钥、用量等集中存储；`manage.py` 内置为 `data/`） |
+| `M365_CONFIG` | `~/.config/m365-copilot2api/accounts.json` | 账号配置文件路径 |
 | `M365_SESSION_TTL_MINUTES` | `120` | 会话绑定存活时间（分钟），过期从 `sessions.json` 清除 |
 | `M365_CONTEXT_TTL_MINUTES` | `120` | 上下文指纹复用窗口（分钟） |
 | `M365_CONTEXT_SIMILARITY` | `0.6` | 上下文相似度复用阈值（0~1，Jaccard 相似度） |

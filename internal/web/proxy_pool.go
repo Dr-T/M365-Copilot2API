@@ -2,7 +2,7 @@ package web
 
 import (
 	"encoding/json"
-	"m365-native/internal/outbound"
+	"m365-copilot2api/internal/outbound"
 	"net/http"
 	"strings"
 )

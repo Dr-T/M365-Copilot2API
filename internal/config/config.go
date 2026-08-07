@@ -22,7 +22,7 @@ func Path() string {
 		return p
 	}
 	h, _ := os.UserHomeDir()
-	return filepath.Join(h, ".config", "m365-native", "accounts.json")
+	return filepath.Join(h, ".config", "m365-copilot2api", "accounts.json")
 }
 
 func Load() (Store, error) {

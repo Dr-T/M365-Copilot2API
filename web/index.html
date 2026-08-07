@@ -526,7 +526,7 @@ if (response.output_text) {
         <div class="term" id="termBox" style="display:none;margin-bottom:16px">
           <div class="term-head">
             <span class="term-dot red"></span><span class="term-dot yellow"></span><span class="term-dot green"></span>
-            <span class="term-title" id="termTitle">cleanup — m365-native</span>
+            <span class="term-title" id="termTitle">cleanup — m365-copilot2api</span>
             <button class="term-clear" onclick="termClear()">清空</button>
           </div>
           <div class="term-body" id="termBody"></div>
@@ -1049,7 +1049,7 @@ async function deleteConv(id){if(!confirm('删除？'))return;try{await api('/ap
 async function cleanupAll(){
   const total=confirm('清理所有对话？\n将在终端中逐条删除并显示日志。');
   if(!total)return;
-  termOpen('cleanup — m365-native');
+  termOpen('cleanup — m365-copilot2api');
   termLine('开始清理全部对话…');
   let ok=0,fail=0,round=0;
   for(round=1;round<=100;round++){
@@ -1122,7 +1122,7 @@ async function proxyCheckOne(url){
   }catch(e){showNotice(e.message,'error');}
 }
 async function proxyCheckAll(){
-  termOpen('proxy check — m365-native');
+  termOpen('proxy check — m365-copilot2api');
   termLine('开始检查全部代理…');
   try{
     const d=await api('/api/admin/proxy-pool?action=check',{method:'PUT'});

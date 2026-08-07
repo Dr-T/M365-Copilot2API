@@ -10,7 +10,7 @@ import urllib.error
 import http.cookiejar
 
 TEST_DIR = r"D:\m365-e2e-test"
-SERVER_EXE = os.path.join(TEST_DIR, "m365-native.exe")
+SERVER_EXE = os.path.join(TEST_DIR, "m365-copilot2api.exe")
 DATA_DIR = os.path.join(TEST_DIR, "data")
 SECRETS_DIR = os.path.join(TEST_DIR, "secrets")
 LOG_FILE = os.path.join(TEST_DIR, "e2e.log")
@@ -62,7 +62,7 @@ def main():
     if os.path.exists(TEST_DIR):
         import shutil
         # Kill any existing server
-        subprocess.run("taskkill /F /IM m365-native.exe 2>$null", shell=True)
+        subprocess.run("taskkill /F /IM m365-copilot2api.exe 2>$null", shell=True)
         time.sleep(1)
         def on_rm_error(func, path, exc_info):
             import stat

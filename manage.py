@@ -6,7 +6,7 @@ import time
 import os
 import signal
 
-SERVER_EXE = r"D:\M365-Copilot2API\m365-native.exe"
+SERVER_EXE = r"D:\M365-Copilot2API\m365-copilot2api.exe"
 SERVER_DIR = r"D:\M365-Copilot2API"
 LOG_FILE = r"D:\M365-Copilot2API\server.log"
 ERR_FILE = r"D:\M365-Copilot2API\server-error.log"

@@ -1,8 +1,8 @@
 services:
-  m365-native:
+  m365-copilot2api:
     build: .
-    image: m365-native:latest
-    container_name: m365-native
+    image: m365-copilot2api:latest
+    container_name: m365-copilot2api
     restart: unless-stopped
     ports:
       - "127.0.0.1:4141:4141"

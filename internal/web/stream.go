@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"m365-native/internal/chathub"
+	"m365-copilot2api/internal/chathub"
 )
 
 func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {

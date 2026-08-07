@@ -2,7 +2,7 @@
 """Minimal working M365 Copilot ChatHub probe.
 
 Uses token file produced by pkce_auth_gateway.py:
-  ~/.config/m365-native/accounts.json
+  ~/.config/m365-copilot2api/accounts.json
 
 Protocol notes (from cramt/m365-copilot-proxy reverse eng, verified live):
 - WS: wss://substrate.office.com/m365Copilot/Chathub/{oid}@{tid}
@@ -24,7 +24,7 @@ from pathlib import Path
 
 import websockets
 
-DEFAULT_TOKEN_FILE = "~/.config/m365-native/accounts.json"
+DEFAULT_TOKEN_FILE = "~/.config/m365-copilot2api/accounts.json"
 
 VARIANTS = ",".join(
     [

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"m365-native/internal/outbound"
+	"m365-copilot2api/internal/outbound"
 )
 
 type modelMapping struct {
@@ -96,7 +96,7 @@ func settingsPath() string {
 		return p
 	}
 	h, _ := os.UserHomeDir()
-	return filepath.Join(h, ".config", "m365-native", "settings.json")
+	return filepath.Join(h, ".config", "m365-copilot2api", "settings.json")
 }
 
 var sharedSettings *settingsStore
@@ -197,8 +197,26 @@ func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		jsonOut(w, map[string]any{"settings": s.settings.get(), "codexModels": configurableCodexModels, "upstreamTones": knownUpstreamTones(), "restartRequiredFields": []string{"listenAddress", "configPath", "tokenCachePath", "sessionCachePath", "outboundProxy", "proxyPool", "clientId", "authority", "redirectUri", "scope", "debugLogPath"}})
 	case http.MethodPut:
+		// 前端可能只修改一个字段（如监听地址），其余字段以零值提交。
+		// 逐字段合并到当前设置再校验，避免"改一个字段弄丢其他配置"。
+		cur := s.settings.get()
+		base, _ := json.Marshal(cur)
+		var merged map[string]any
+		if json.Unmarshal(base, &merged) != nil {
+			writeOpenAIError(w, 500, "internal_error", "marshal settings")
+			return
+		}
+		var patch map[string]any
+		if json.NewDecoder(r.Body).Decode(&patch) != nil {
+			writeOpenAIError(w, 400, "invalid_request_error", "bad json")
+			return
+		}
+		for k, v := range patch {
+			merged[k] = v
+		}
+		mergedJSON, _ := json.Marshal(merged)
 		var v runtimeSettings
-		if json.NewDecoder(r.Body).Decode(&v) != nil {
+		if json.Unmarshal(mergedJSON, &v) != nil {
 			writeOpenAIError(w, 400, "invalid_request_error", "bad json")
 			return
 		}

@@ -49,9 +49,9 @@ func CachePath() string {
 	}
 	h, err := os.UserHomeDir()
 	if err != nil || h == "" {
-		return filepath.Join(".", ".config", "m365-native", "accounts.json")
+		return filepath.Join(".", ".config", "m365-copilot2api", "accounts.json")
 	}
-	return filepath.Join(h, ".config", "m365-native", "accounts.json")
+	return filepath.Join(h, ".config", "m365-copilot2api", "accounts.json")
 }
 
 func OpenStore(path string) (*Store, error) {

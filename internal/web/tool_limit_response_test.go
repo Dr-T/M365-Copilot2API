@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"m365-native/internal/chathub"
+	"m365-copilot2api/internal/chathub"
 )
 
 func TestConfiguredLimitSerializesOneToolCall(t *testing.T) {

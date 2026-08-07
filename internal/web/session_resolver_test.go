@@ -8,20 +8,19 @@ import (
 	"time"
 )
 
-func TestResolveContentKeyedAcrossIdentity(t *testing.T) {
+func TestResolveContentKeyedSameIdentity(t *testing.T) {
 	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
 	t.Setenv("M365_CONVERSATION_CACHE", filepath.Join(t.TempDir(), "conversations.json"))
 	t.Setenv("M365_USER_SESSION_CACHE", filepath.Join(t.TempDir(), "users.json"))
 	sr := openSessionResolver()
 
-	// 首次请求绑定云端对话，来自一个环境（IP/user 身份 A）。
+	// 首次请求绑定云端对话，同一 IP/UA 但不同 user 账户。
 	sr.Bind("", "conv-shared", "acc1",
-		&oaiReq{User: "alice", Messages: []oaiMsg{{Role: "user", Content: "hello"}}},
+		&oaiReq{User: "alice", Messages: []oaiMsg{{Role: "user", Content: "hello"}, {Role: "assistant", Content: "你好"}}},
 		resolverTestRequest("203.0.113.10", "client-a", "alice"))
 
-	// 续接请求来自完全不同的 IP / user / UA——身份不应阻断复用，
-	// 只凭上下文前缀命中同一个云端对话。
-	res := sr.Resolve(resolverTestRequest("198.51.100.99", "client-b", "bob"),
+	// 续接请求来自同一 IP/UA（换 user 仍可命中，说明不做 user 拦截）。
+	res := sr.Resolve(resolverTestRequest("203.0.113.10", "client-a", "bob"),
 		&oaiReq{
 			User: "bob",
 			Messages: []oaiMsg{
@@ -31,16 +30,51 @@ func TestResolveContentKeyedAcrossIdentity(t *testing.T) {
 			},
 		})
 	if res.IsNew {
-		t.Fatal("内容前缀相同却未复用会话，内容键失效")
+		t.Fatal("同 IP/UA 前缀相同却未复用会话，内容键失效")
 	}
-	if res.MatchedBy != "context_prefix_1" {
-		t.Fatalf("expected context_prefix_1, got %q", res.MatchedBy)
+	if res.MatchedBy != "context_prefix_2" {
+		t.Fatalf("expected context_prefix_2, got %q", res.MatchedBy)
 	}
 	if res.ConversationID != "conv-shared" {
 		t.Fatalf("expected conversation conv-shared, got %s", res.ConversationID)
 	}
-	if res.HistoryLen != 1 {
-		t.Fatalf("expected HistoryLen=1 (增量起点), got %d", res.HistoryLen)
+	if res.HistoryLen != 2 {
+		t.Fatalf("expected HistoryLen=2 (增量起点), got %d", res.HistoryLen)
+	}
+}
+
+func TestResolveDoesNotMatchAcrossIdentity(t *testing.T) {
+	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
+	t.Setenv("M365_CONVERSATION_CACHE", filepath.Join(t.TempDir(), "conversations.json"))
+	t.Setenv("M365_USER_SESSION_CACHE", filepath.Join(t.TempDir(), "users.json"))
+	sr := openSessionResolver()
+
+	sr.Bind("", "conv-a", "acc1",
+		&oaiReq{Messages: []oaiMsg{{Role: "user", Content: "继续"}}},
+		resolverTestRequest("203.0.113.10", "client-a", "alice"))
+
+	// 不同 IP / UA 的用户输入同样的短消息，不应串到别人的会话。
+	res := sr.Resolve(resolverTestRequest("198.51.100.99", "client-b", "bob"),
+		&oaiReq{Messages: []oaiMsg{{Role: "user", Content: "继续"}}})
+	if !res.IsNew {
+		t.Fatalf("跨 IP/UA 的内容必须新建会话，got matched=%s conv=%s", res.MatchedBy, res.ConversationID)
+	}
+}
+
+func TestResolveSingleMessageNeverReuses(t *testing.T) {
+	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
+	sr := openSessionResolver()
+
+	sr.Bind("", "conv-short", "acc1",
+		&oaiReq{Messages: []oaiMsg{{Role: "user", Content: "继续"}}},
+		resolverTestRequest("203.0.113.10", "client-a", "alice"))
+
+	// 单条消息不构成前缀门槛（n>1），即使用户自己重发也不应复用，
+	// 只在多轮上下文中才有复用资格。
+	res := sr.Resolve(resolverTestRequest("203.0.113.10", "client-a", "alice"),
+		&oaiReq{Messages: []oaiMsg{{Role: "user", Content: "继续"}}})
+	if !res.IsNew {
+		t.Fatalf("单条短消息不应复用会话，got matched=%s", res.MatchedBy)
 	}
 }
 
@@ -111,7 +145,10 @@ func TestResolverPersistsHistoryAcrossReload(t *testing.T) {
 
 	sr1 := openSessionResolver()
 	sr1.Bind("", "conv-persist", "acc1",
-		&oaiReq{Messages: []oaiMsg{{Role: "user", Content: "persisted question"}}},
+		&oaiReq{Messages: []oaiMsg{
+			{Role: "user", Content: "persisted question"},
+			{Role: "assistant", Content: "persisted answer"},
+		}},
 		httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil))
 
 	// 模拟重启：重新打开同一缓存文件，历史仍在 → 前缀仍可命中。
@@ -119,6 +156,7 @@ func TestResolverPersistsHistoryAcrossReload(t *testing.T) {
 	res := sr2.Resolve(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
 		&oaiReq{Messages: []oaiMsg{
 			{Role: "user", Content: "persisted question"},
+			{Role: "assistant", Content: "persisted answer"},
 			{Role: "user", Content: "follow-up"},
 		}})
 	if res.IsNew {
@@ -127,8 +165,8 @@ func TestResolverPersistsHistoryAcrossReload(t *testing.T) {
 	if res.ConversationID != "conv-persist" {
 		t.Fatalf("unexpected conversation %s", res.ConversationID)
 	}
-	if res.HistoryLen != 1 {
-		t.Fatalf("expected HistoryLen=1 after reload, got %d", res.HistoryLen)
+	if res.HistoryLen != 2 {
+		t.Fatalf("expected HistoryLen=2 after reload, got %d", res.HistoryLen)
 	}
 }
 

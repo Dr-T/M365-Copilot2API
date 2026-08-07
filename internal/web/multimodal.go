@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"m365-native/internal/chathub"
+	"m365-copilot2api/internal/chathub"
 )
 
 func parseContent(c any) (string, []chathub.Attachment) {

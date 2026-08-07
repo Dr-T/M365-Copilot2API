@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"m365-native/internal/chathub"
+	"m365-copilot2api/internal/chathub"
 )
 
 // responsesRequest is the OpenAI Responses API request subset supported by the gateway.

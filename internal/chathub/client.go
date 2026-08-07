@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"m365-native/internal/outbound"
+	"m365-copilot2api/internal/outbound"
 	"mime/multipart"
 	"net/http"
 	"net/url"

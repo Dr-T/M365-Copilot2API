@@ -2,8 +2,8 @@ package main
 
 import (
 	"log"
-	"m365-native/internal/outbound"
-	"m365-native/internal/web"
+	"m365-copilot2api/internal/outbound"
+	"m365-copilot2api/internal/web"
 	"net/http"
 	"os"
 	"time"
@@ -24,7 +24,7 @@ func main() {
 	if v := os.Getenv("M365_LISTEN"); v != "" {
 		listen = v
 	}
-	log.Printf("m365-native listening on http://%s\\n", listen)
+	log.Printf("m365-copilot2api listening on http://%s\\n", listen)
 	server := &http.Server{
 		Addr:              listen,
 		Handler:           s.Routes(),

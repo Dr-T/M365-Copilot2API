@@ -42,7 +42,7 @@ func openUsageLog() *usageLog {
 		dir := strings.TrimSpace(os.Getenv("M365_DATA_DIR"))
 		if dir == "" {
 			h, _ := os.UserHomeDir()
-			dir = filepath.Join(h, ".config", "m365-native")
+			dir = filepath.Join(h, ".config", "m365-copilot2api")
 		}
 		p = filepath.Join(dir, "usage.jsonl")
 	}

@@ -2,7 +2,7 @@ package web
 
 import (
 	"encoding/json"
-	"m365-native/internal/chathub"
+	"m365-copilot2api/internal/chathub"
 	"testing"
 )
 

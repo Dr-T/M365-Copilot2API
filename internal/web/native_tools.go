@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"m365-native/internal/chathub"
+	"m365-copilot2api/internal/chathub"
 )
 
 // nativeToolCalls converts only tool invocations actually present in ChatHub

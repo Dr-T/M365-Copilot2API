@@ -98,7 +98,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	err = c.sendRequest(ctx, "initialize", map[string]any{
 		"protocolVersion": "2024-11-05",
 		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]any{"name": "m365-native-mcp-client", "version": "0.1.0"},
+		"clientInfo":      map[string]any{"name": "m365-copilot2api-mcp-client", "version": "0.1.0"},
 	})
 	if err != nil {
 		c.Close()

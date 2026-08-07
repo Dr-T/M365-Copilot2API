@@ -32,7 +32,7 @@ func openAPIKeys() *apiKeyStore {
 	p := strings.TrimSpace(os.Getenv("M365_API_KEYS"))
 	if p == "" {
 		h, _ := os.UserHomeDir()
-		p = filepath.Join(h, ".config", "m365-native", "api-keys.json")
+		p = filepath.Join(h, ".config", "m365-copilot2api", "api-keys.json")
 	}
 	s := &apiKeyStore{Path: p}
 	b, e := os.ReadFile(p)

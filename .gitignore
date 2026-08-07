@@ -10,9 +10,9 @@ cookies*.txt
 /tmp/
 
 # Build artifacts
-/m365-native
-/m365-native.exe
-/m365-native.exe.rollback
+/m365-copilot2api
+/m365-copilot2api.exe
+/m365-copilot2api.exe.rollback
 /bin/
 /dist/
 *.out
@@ -27,10 +27,10 @@ __pycache__/
 # Local runtime and diagnostic artifacts
 /debug-logs.jsonl
 /server
-/m365-native.next
-/m365-native.service
-/m365-native.rollback*
-/m365-native.exe~
+/m365-copilot2api.next
+/m365-copilot2api.service
+/m365-copilot2api.rollback*
+/m365-copilot2api.exe~
 /data/
 /secrets/
 .runtime-backups/

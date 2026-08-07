@@ -3,7 +3,7 @@ package web
 import (
 	"encoding/json"
 	"fmt"
-	"m365-native/internal/chathub"
+	"m365-copilot2api/internal/chathub"
 	"net/http"
 	"strings"
 	"time"

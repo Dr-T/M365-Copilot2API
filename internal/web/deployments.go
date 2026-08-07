@@ -47,7 +47,7 @@ func openDeployments() *deploymentStore {
 	dir := os.Getenv("M365_DATA_DIR")
 	if dir == "" {
 		h, _ := os.UserHomeDir()
-		dir = filepath.Join(h, ".config", "m365-native")
+		dir = filepath.Join(h, ".config", "m365-copilot2api")
 	}
 	s := &deploymentStore{path: filepath.Join(dir, "deployments.json")}
 	b, e := os.ReadFile(s.path)
@@ -160,7 +160,7 @@ func deployCloudflare(ctx context.Context, account, name, token string) (deploym
 	}
 	base := strings.TrimRight(cloudflareAPIBase, "/")
 	u := base + "/accounts/" + url.PathEscape(account) + "/workers/scripts/" + url.PathEscape(name)
-	script := "export default {async fetch(request){if(new URL(request.url).pathname==='/health')return new Response('ok');return new Response('m365-native worker relay is configured',{status:200})}}"
+	script := "export default {async fetch(request){if(new URL(request.url).pathname==='/health')return new Response('ok');return new Response('m365-copilot2api worker relay is configured',{status:200})}}"
 	req, e := http.NewRequestWithContext(ctx, http.MethodPut, u, strings.NewReader(script))
 	if e != nil {
 		return deployment{}, e

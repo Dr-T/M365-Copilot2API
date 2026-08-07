@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"m365-native/internal/chathub"
+	"m365-copilot2api/internal/chathub"
 	"net/http"
 	"strings"
 	"time"

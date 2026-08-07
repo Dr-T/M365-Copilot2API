@@ -1,4 +1,4 @@
-module m365-native
+module m365-copilot2api
 
 go 1.23
 

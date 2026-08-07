@@ -30,7 +30,7 @@ func adminPasswordPath() string {
 		return filepath.Join(filepath.Dir(p), "admin-password")
 	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "m365-native", "admin-password")
+	return filepath.Join(home, ".config", "m365-copilot2api", "admin-password")
 }
 func loadAdminPassword() (string, bool) {
 	// The writable persisted value takes precedence over bootstrap sources.

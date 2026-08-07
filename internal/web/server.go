@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"m365-native/internal/auth"
-	"m365-native/internal/chathub"
+	"m365-copilot2api/internal/auth"
+	"m365-copilot2api/internal/chathub"
 	"net"
 	"net/http"
 	"os"
@@ -1264,6 +1264,10 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 		content = parts
 	}
+	// 上游 ChatHub 不返回 token 计数，按请求/回复文本本地估算填充
+	// OpenAI 要求的 usage 字段。
+	pt := EstimateTokens(prompt)
+	ct := EstimateTokens(res.Text)
 	jsonOut(w, map[string]any{
 		"id":      id,
 		"object":  "chat.completion",
@@ -1277,7 +1281,12 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			},
 			"finish_reason": "stop",
 		}},
-		"m365": compatM365Metadata(res),
+		"m365":  compatM365Metadata(res),
+		"usage": map[string]any{
+			"prompt_tokens":     pt,
+			"completion_tokens": ct,
+			"total_tokens":      pt + ct,
+		},
 	})
 }
 

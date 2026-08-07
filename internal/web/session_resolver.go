@@ -174,18 +174,16 @@ func contextSimilarity(a, b []oaiMsg) float64 {
 	if len(a) == 0 || len(b) == 0 {
 		return 0
 	}
-	lastA := a[len(a)-1]
-	lastB := b[len(b)-1]
-	if lastA.Role != lastB.Role {
-		return 0
+	// 全历史相似：把双方所有消息文本拼起来做 Jaccard，比只比最后一条
+	// 更能代表整段上下文，避免两条短消息（如"继续"）就误判高度相似。
+	var ta, tb strings.Builder
+	for _, m := range a {
+		ta.WriteString(m.Role + ":" + contentToString(m.Content) + "\n")
 	}
-	textA := contentToString(lastA.Content)
-	textB := contentToString(lastB.Content)
-	if textA == textB {
-		return 1.0
+	for _, m := range b {
+		tb.WriteString(m.Role + ":" + contentToString(m.Content) + "\n")
 	}
-	similarity := jaccardSimilarity(textA, textB)
-	return similarity
+	return jaccardSimilarity(ta.String(), tb.String())
 }
 
 func jaccardSimilarity(a, b string) float64 {
@@ -260,9 +258,10 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 	}
 
 	// 鍐呭閿細鍗忚娑堟伅鍚嶅簭鍒椾弗鏍肩瓑浜庢煇涓凡璁板綍浼氳瘽鐨勫巻鍙叉椂鐩存帴澶嶇敤杩欎釜
-	// 浜戠瀵硅瘽鈥斺€斾笉鍏冲績鍏?IP/key/user 鏄皝鍙戣捣鐨勶紝鍝€曟崲鐜涔熻兘缁笂銆?
+	// 浜戠瀵硅瘽锛屼絾鍙湪鍚屼竴 IP/UA 鎸囩汗涓嬶紝閬垮厤鐭秷鎭湪涓嶅悓鐢ㄦ埛闂翠簰绔?
 	// HistoryLen 杩斿洖璇ュ墠缂€闀垮害锛屼笂灞傛嵁姝ゅ彧鍙戦€?messages[HistoryLen:] 澧為噺銆?
-	if bestID, n := sr.matchContextLocked(body.Messages); bestID != "" {
+	ipFinger := clientIPFingerprint(r)
+	if bestID, n := sr.matchContextLocked(ipFinger, body.Messages); bestID != "" {
 		sess := sr.sessions[bestID]
 		sess.LastUsedAt = time.Now().UTC()
 		sr.sessions[bestID] = sess
@@ -291,6 +290,14 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 		if time.Since(sess.LastUsedAt) > sr.contextTTL {
 			continue
 		}
+		// 兜底同样受身份约束：只有同一 IP/UA 才可能复用。
+		if sess.IPFingerprint != ipFinger {
+			continue
+		}
+		// 兜底也需要至少两轮历史，单条短消息（如"继续"）不触发。
+		if len(sess.ContextHistory) < 2 {
+			continue
+		}
 		sim := contextSimilarity(sess.ContextHistory, body.Messages)
 		if sim > bestSimilarity {
 			bestSimilarity = sim
@@ -317,7 +324,7 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 // matchContextLocked 浠庡叏閮ㄤ細璇濅腑鎵惧埌鍏?contextHistory 涓ユ牸浣滀负娑堟伅鍓嶇紑鐨?
 // 閭ｄ釜浼氳瘽锛涘彧閫夊墠缂€鏈€闀跨殑涓€涓紝閬垮厤鐭墠缂€鍦ㄤ笉鍚屼細璇濋棿浜掓挒銆傝繑鍥?
 // (sessionID, 鍖归厤鍒扮殑娑堟伅鏉℃暟)銆?
-func (sr *sessionResolver) matchContextLocked(messages []oaiMsg) (string, int) {
+func (sr *sessionResolver) matchContextLocked(ipFinger string, messages []oaiMsg) (string, int) {
 	if len(messages) == 0 {
 		return "", 0
 	}
@@ -327,8 +334,13 @@ func (sr *sessionResolver) matchContextLocked(messages []oaiMsg) (string, int) {
 		if time.Since(sess.LastUsedAt) > sr.contextTTL {
 			continue
 		}
+		if sess.IPFingerprint != ipFinger {
+			continue
+		}
 		n := contextPrefixLen(sess.ContextHistory, messages)
-		if n > 0 && n > bestN {
+		// 门槛：至少 2 条消息的前缀才算复用，避免不同用户以同一条
+		// 短消息（如"继续"）互相串会话。
+		if n > 1 && n > bestN {
 			bestN = n
 			bestID = id
 		}
