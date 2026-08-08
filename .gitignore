@@ -42,3 +42,6 @@ test-results.jsonl
 server.log
 server-error.log
 *.pid
+
+# Local agent memory (machine-specific notes)
+AGENTS.md

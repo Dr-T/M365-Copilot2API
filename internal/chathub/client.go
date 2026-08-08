@@ -1,7 +1,6 @@
 package chathub
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -9,7 +8,6 @@ import (
 	"io"
 	"log"
 	"m365-copilot2api/internal/outbound"
-	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strings"
@@ -480,27 +478,25 @@ func (c *Client) uploadAttachments(ctx context.Context, acc Account, conversatio
 		if _, err := base64.StdEncoding.DecodeString(encoded); err != nil {
 			return fmt.Errorf("decode image: %w", err)
 		}
-		var body bytes.Buffer
-		mw := multipart.NewWriter(&body)
-		_ = mw.WriteField("scenario", "UploadImage")
-		_ = mw.WriteField("conversationId", conversationID)
+		form := url.Values{}
+		form.Set("scenario", "UploadImage")
+		form.Set("conversationId", conversationID)
 		// The browser sends the complete data URL in FileBase64, including the
 		// media-type prefix. UploadFile accepts this form and returns docId.
-		_ = mw.WriteField("FileBase64", imageData)
+		// Live-verified 2026-08-08: UploadFile rejects multipart bodies
+		// (HTTP 400 InvalidRequest); it requires x-www-form-urlencoded like
+		// PyRIT's httpx client sends.
+		form.Set("FileBase64", imageData)
 		if c.Trace != nil {
 			c.Trace(map[string]any{"stage": "upload_start", "index": i, "conversation_id": conversationID, "mime_type": a.MimeType, "base64_length": len(encoded), "token_present": acc.AccessToken != ""})
 		}
-		_ = mw.WriteField("optionsSets", "cwcgptvsan")
-		_ = mw.WriteField("optionsSets", "flux_v3_gptv_enable_upload_multi_image_in_turn_wo_ch")
-		_ = mw.WriteField("optionsSets", "gptvnorm2048")
-		if err := mw.Close(); err != nil {
-			return err
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://substrate.office.com/m365Copilot/UploadFile", &body)
+		form.Add("optionsSets", "cwcgptvsan")
+		form.Add("optionsSets", "flux_v3_gptv_enable_upload_multi_image_in_turn_wo_ch")
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://substrate.office.com/m365Copilot/UploadFile", strings.NewReader(form.Encode()))
 		if err != nil {
 			return err
 		}
-		req.Header.Set("Content-Type", mw.FormDataContentType())
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		if acc.AccessToken != "" {
 			req.Header.Set("Authorization", "Bearer "+acc.AccessToken)
 		}
@@ -510,9 +506,7 @@ func (c *Client) uploadAttachments(ctx context.Context, acc Account, conversatio
 		// and mirrors the PyRIT request flow.
 		req.Header.Set("X-Variants", "feature.EnableImageSupportInUploadFile")
 		req.Header.Set("X-Scenario", "OfficeWebIncludedCopilot")
-		if acc.OID != "" && acc.TID != "" {
-			req.Header.Set("X-AnchorMailbox", "Oid:"+acc.OID+"@"+acc.TID)
-		}
+		req.Header.Set("Referer", "https://m365.cloud.microsoft/")
 		for k, vv := range c.HTTPHeader {
 			for _, v := range vv {
 				if k != "Origin" || v != "" {

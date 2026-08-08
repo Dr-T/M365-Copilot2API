@@ -42,7 +42,7 @@ M365 Copilot2API 是一个用 Go 编写的自托管网关，把微软 365 Copilo
 | 代理池 | HTTP / HTTPS / SOCKS5 代理轮换、健康检查、失败冷却 |
 | 用量统计 | 按 key / 账号 / 模型 / 端点聚合（`usage.jsonl`） |
 | 缓存命中统计 | 命中率、节省 token 仪表盘 |
-| 多模态输入 | 支持图片等附件（base64 / URL） |
+| 多模态输入 | 支持图片等附件（base64 data URL / https URL），自动完成 M365 上传与消息注解注入 |
 | 图像生成 | `/v1/images/generations` |
 | Web 控制台 | 账号、密钥、代理池、模型、对话、日志一屏管理 |
 
@@ -229,6 +229,29 @@ curl http://127.0.0.1:4141/v1/chat/completions \
   -d '{"model":"gpt-5.6-sol","messages":[{"role":"user","content":"继续我们刚才的讨论"}]}'
 ```
 
+### 多模态图片输入（OpenAI 格式）
+
+客户端用标准的 OpenAI `image_url` 格式传图即可，网关会自动把图片上传到 M365 的 `UploadFile` 端点，并在 ChatHub 消息里注入文件注解（无需客户端感知上游细节）：
+
+```bash
+# base64 data URL 方式
+curl http://127.0.0.1:4141/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-5.6-sol",
+    "messages": [{
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "这张图里是什么颜色？"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB..."}}
+      ]
+    }]
+  }'
+```
+
+也可以直接传 https 图片 URL（仅公网地址，带 SSRF 防护；本地图请用 data URL）。Responses 协议的 `input_image` / `input_file` 同样支持。
+
 ### Anthropic 格式（Claude Code / Cursor）
 
 ```bash
@@ -357,6 +380,8 @@ M365-Copilot2API/
 ├── scripts/               # 运维脚本
 │   ├── e2e_test.py        # 端到端测试
 │   ├── chathub_probe.py   # ChatHub 协议探针
+│   ├── genprobe.py        # 图像生成协议探针（原始帧 dump）
+│   ├── multimodal_probe.py # 多模态图片输入探针（上传 + 注解流程）
 │   ├── test-recorder.ps1  # Windows 测试录制
 │   └── m365-upload-forensic-trace.user.js  # 上传取证脚本
 ├── docs/screenshots/      # 界面截图

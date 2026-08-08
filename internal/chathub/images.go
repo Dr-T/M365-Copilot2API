@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/url"
+	"regexp"
 	"strings"
 )
 
@@ -25,9 +26,20 @@ func imageURLs(raw []json.RawMessage) []string {
 						seen[s] = true
 						out = append(out, s)
 					}
-				} else {
-					walk(e)
+					continue
 				}
+				// ImageReferenceUrls and similar fields hold image URLs as a
+				// flat string array keyed by a *Urls name.
+				if arr, ok := e.([]any); ok && strings.Contains(lk, "url") {
+					for _, item := range arr {
+						if s, ok := item.(string); ok && isImageURL(s) && !seen[s] {
+							seen[s] = true
+							out = append(out, s)
+						}
+					}
+					continue
+				}
+				walk(e)
 			}
 		}
 	}
@@ -49,6 +61,12 @@ func isImageURL(s string) bool {
 	if err != nil || u.Scheme != "https" {
 		return false
 	}
-	p := strings.ToLower(u.Path)
-	return strings.Contains(p, "image") || strings.HasSuffix(p, ".png") || strings.HasSuffix(p, ".jpg") || strings.HasSuffix(p, ".jpeg") || strings.HasSuffix(p, ".webp") || strings.HasSuffix(p, ".gif")
+	// Designer-hosted generation URLs carry the extension in the query
+	// (?path=.../dalle-xxx.png&dcHint=...); check path and query for markers.
+	p := strings.ToLower(u.Path + "?" + u.RawQuery)
+	if strings.Contains(p, "image") {
+		return true
+	}
+	re := regexp.MustCompile(`\.(png|jpe?g|webp|gif)(&|$)`)
+	return re.MatchString(p)
 }
