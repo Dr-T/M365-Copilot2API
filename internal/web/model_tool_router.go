@@ -9,21 +9,29 @@ import (
 func modelToolRouterPrompt(prompt string, tools []map[string]any, choice any) string {
 	defs, _ := json.Marshal(tools)
 	mode := normalizedToolChoiceMode(choice)
+	rules := `- If a tool is needed, respond with: CALL_TOOL: tool_name({"arg1":"value1"})
+- If no tool is needed, respond with: NO_TOOL_NEEDED
+- Only use tools from the available list above
+- Validate all arguments against the tool's schema
+- Do not invent tools that are not in the list`
+	// Multi-turn: completed tool evidence (tool[...], tool_calls:) was already
+	// acted upon, so re-invoking those tools would duplicate work.
+	if strings.Contains(prompt, "tool_calls:") || strings.Contains(prompt, "tool[call_") {
+		rules += `
+- Completed evidence must not be repeated: tool_calls/tool[call_x] rows are prior results already delivered to the user, never re-invoke them
+- Only start a new tool call when fresh unfinished work remains on the current request`
+	}
 	return fmt.Sprintf(`You are a tool selection assistant. Based on the user request, decide which tool to call next.
 
 Available tools: %s
 
-Mode: %s
+MODE: %s
 
 Rules:
-- If a tool is needed, respond with: CALL_TOOL: tool_name({"arg1":"value1"})
-- If no tool is needed, respond with: NO_TOOL_NEEDED
-- Only use tools from the available list above
-- Validate all arguments against the tool's schema
-- Do not invent tools that are not in the list
+%s
 
 User request and evidence:
-%s`, defs, mode, prompt)
+%s`, defs, mode, rules, prompt)
 }
 
 func parseModelToolDecision(text string, tools []map[string]any, choice any) ([]detectedToolCall, bool) {
