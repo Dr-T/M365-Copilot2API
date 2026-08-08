@@ -76,7 +76,10 @@ func toolPlanSummaryFromMaps(calls []any) string {
 func writeToolResponse(w http.ResponseWriter, id, model string, stream bool, calls []detectedToolCall, res chathub.Result, preambleSent ...bool) error {
 	toolCalls := toolCallMaps(calls)
 	summary := toolPlanSummary(calls)
-	msg := map[string]any{"role": "assistant", "content": summary, "reasoning_content": summary, "tool_calls": toolCalls}
+	msg := map[string]any{"role": "assistant", "content": summary, "tool_calls": toolCalls}
+	if res.Reasoning != "" {
+		msg["reasoning_content"] = res.Reasoning
+	}
 	if stream {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
@@ -91,7 +94,11 @@ func writeToolResponse(w http.ResponseWriter, id, model string, stream bool, cal
 			return map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": finish}}}
 		}
 		if len(preambleSent) == 0 || !preambleSent[0] {
-			emit(base(map[string]any{"role": "assistant", "content": summary, "reasoning_content": summary}, nil))
+			delta := map[string]any{"role": "assistant", "content": summary}
+			if res.Reasoning != "" {
+				delta["reasoning_content"] = res.Reasoning
+			}
+			emit(base(delta, nil))
 		}
 		for i, tc := range calls {
 			typ := tc.Type

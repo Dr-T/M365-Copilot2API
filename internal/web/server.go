@@ -827,6 +827,10 @@ type oaiReq struct {
 	ConversationID string               `json:"conversation_id"`
 	SessionID      string               `json:"session_id"`
 	SessionKey     string               `json:"session_key"`
+	// CamelCase aliases mirroring the response metadata fields; clients echo
+	// m365.conversationId / m365.sessionId back verbatim.
+	ConversationIDC string `json:"conversationId,omitempty"`
+	SessionIDC      string `json:"sessionId,omitempty"`
 	Attachments    []chathub.Attachment `json:"attachments,omitempty"`
 	Tools          []chathub.Tool       `json:"tools,omitempty"`
 	// Legacy OpenAI-compatible clients still send functions/function_call.
@@ -908,6 +912,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	normalizeLegacyTools(&body)
+	body.ConversationID = firstNonEmpty(body.ConversationID, body.ConversationIDC)
+	body.SessionID = firstNonEmpty(body.SessionID, body.SessionIDC)
 	log.Printf("[req-trace] id=%s stage=body_parsed messages=%d tools=%d choice=%s raw_bytes=%d", requestID, len(body.Messages), len(body.Tools), normalizedToolChoiceMode(body.ToolChoice), len(raw))
 	if err := validateToolConversation(body.Messages); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "tool_protocol_error", err.Error())

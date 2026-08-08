@@ -36,7 +36,8 @@ func (s *Server) StartAutoCleanup() {
 			maxAge = time.Duration(n) * time.Hour
 		}
 	}
-	keepN := 100
+	// 云端最多保留 5 个对话，超过就删最旧的（用户要求对话总数不超过 5）
+	keepN := 5
 	if v := os.Getenv("M365_AUTO_CLEANUP_KEEP_N"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			keepN = n
