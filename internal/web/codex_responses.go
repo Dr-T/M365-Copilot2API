@@ -50,10 +50,13 @@ func writeResponsesResult(w http.ResponseWriter, model string, stream bool, src 
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	f, _ := w.(http.Flusher)
+	aborted := false
 	emit := func(name string, v any) {
-		writeSSE(w, name, v)
-		if f != nil {
-			f.Flush()
+		if aborted {
+			return
+		}
+		if err := sseWriteFrame(w, f, name, v); err != nil {
+			aborted = true
 		}
 	}
 	emit("response.created", map[string]any{"type": "response.created", "response": map[string]any{"id": id, "object": "response", "status": "in_progress", "model": model, "output": []any{}}})

@@ -79,22 +79,39 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 			"sessionId":      res.SessionID,
 			"requestId":      res.RequestID,
 		}
-		writeSSE(w, "event", payload)
-		flusher.Flush()
+		if err := writeSSE(r, w, flusher, "event", payload); err != nil {
+			return
+		}
 	}
 	for i, event := range chathub.SemanticEvents(res.Events) {
-		writeSSE(w, "semantic", map[string]any{"index": i, "type": "m365.semantic", "event": event})
-		flusher.Flush()
+		if err := writeSSE(r, w, flusher, "semantic", map[string]any{"index": i, "type": "m365.semantic", "event": event}); err != nil {
+			return
+		}
 	}
-	writeSSE(w, "done", map[string]any{
+	if err := writeSSE(r, w, flusher, "done", map[string]any{
 		"type": "done", "text": res.Text,
 		"conversationId": res.ConversationID, "sessionId": res.SessionID, "requestId": res.RequestID,
 		"throttling": res.Throttling,
-	})
-	flusher.Flush()
+	}); err != nil {
+		return
+	}
 }
 
-func writeSSE(w http.ResponseWriter, name string, value any) {
+// writeSSE emits one SSE frame, returning when the client has disconnected
+// (request context canceled) or the write fails so the handler can abort
+// instead of blocking a goroutine against a dead socket.
+func writeSSE(r *http.Request, w http.ResponseWriter, f http.Flusher, name string, value any) error {
+	if err := r.Context().Err(); err != nil {
+		return err
+	}
 	b, _ := json.Marshal(value)
-	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, b)
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Now().Add(30 * time.Second))
+	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, b); err != nil {
+		return err
+	}
+	if f != nil {
+		f.Flush()
+	}
+	return nil
 }

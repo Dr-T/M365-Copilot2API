@@ -164,7 +164,28 @@ web 包失败用例（已复现，稳定失败）：
 
 ---
 
-## 五、优先处理排序与后续建议
+## 修复状态（2026-08-07 第二批后）
+
+- **[已修复] H4（token 刷新惊群）**：`internal/auth/cache.go` `refreshInflight` 按账号单飞合并，失败不再立即落盘 expired（waiters 阻塞共享 channel）。
+- **[已修复] H2（SSE 写背压/悬挂）**：统一 `writeSSE`/`sseWriteFrame`/`sseDataRaw`/`sseSafeRaw`（`stream.go`/`protocol_response.go`），所有流式写路径写前检查 `r.Context().Err()`、写后检查错误并中止 handler；每次写前设 30s write deadline（抵消 `WriteTimeout: 0`）；server.go emitText/writeChunk/connected/DONE/错误帧全部走安全写。
+- **[已修复] H3（附件）**：SSRF 校验（`chathub/ssrf.go`）+ `maxAttachments = 10` + `/api/chat`、`/api/chat/stream` 10MiB body 限制。
+- **[已修复] M1（mcp 竞态/泄漏）**：provider 加锁、Dequeue 轮询、stdlib 接口、Close/setConnected 原子化。
+- **[已修复] M2（原子落盘）**：`internal/web/atomicfile.go` 临时文件 + rename；auth cache/sessions/session_resolver/conversation_manager/keys/debug 均接入。
+- **[已修复] M3（锁内写盘）**：`internal/web/persist.go` 节流落盘（markDirty/flushPending/flushNowBlocking），apiKeys/sessionResolver/conversationManager/sessionStores/usageLog 全部签约，usageLog 批追加保顺序。
+- **[已修复] M4（sessionResolver 兜底扫描）**：maxSessions 1000 LRU 上限 + evictLocked。
+- **[已修复] M5（conversationCleanup 无锁替换）**：`conversations.go` 改用 `SetMode()` 锁内设置，不再替换 manager 指针。
+- **[已修复] M6（debug 中间件）**：递归深度脱敏（16 类敏感键）、请求捕获上限 256KiB、内存 500 条环形。
+- **[已修复] M7（无 graceful shutdown）**：`main.go` signal.NotifyContext + `srv.Shutdown` + `StopPersistLoop` + `StartAutoCleanup` 停止通道。
+- **[已修复] L1（无 recover）**：`internal/web/recover.go` recoverPanics 中间件 + streaming header 追踪。
+- **[已修复] L2（工具路由提示回归）**：`model_tool_router.go` MODE 大写 + 多轮完成证据约束，2 个测试与全套 web 测试全过。
+- **[已修复] L3（单例无锁）**：openDeployments/openSettingsStore 改 `sync.OnceValue`。
+- **[已修复] L4（DefaultClient）**：`deploymentHTTPClient` 30s 超时独立 client，3 处替换。
+- **[已修复] L5（ValidateSettings 错误丢弃）**：启动校验失败输出到日志。
+- **[已修复] L6（GetStats 拷贝锁）**：`cache_stats.go` 返回不可变快照，`go vet` 不再报 lock copy。
+
+**验证闭环提示（保留）**：本机无 gcc，`go test -race` 无法执行；建议在带 gcc 的 CI 补跑 `CGO_ENABLED=1 go test -race ./internal/...`。
+
+## 优先处理排序与后续建议
 
 按"可用性 × 被触达概率 × 修复成本"综合排序：
 

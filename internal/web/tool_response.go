@@ -83,9 +83,8 @@ func writeToolResponse(w http.ResponseWriter, id, model string, stream bool, cal
 		w.Header().Set("Connection", "keep-alive")
 		flusher, _ := w.(http.Flusher)
 		emit := func(v any) {
-			fmt.Fprintf(w, "data: %s\n\n", mustJSON(v))
-			if flusher != nil {
-				flusher.Flush()
+			if err := sseDataRaw(w, flusher, mustJSON(v)); err != nil {
+				return
 			}
 		}
 		base := func(delta map[string]any, finish any) map[string]any {
@@ -102,7 +101,7 @@ func writeToolResponse(w http.ResponseWriter, id, model string, stream bool, cal
 			emit(base(map[string]any{"tool_calls": []any{map[string]any{"index": i, "id": tc.ID, "type": typ, "function": map[string]any{"name": tc.Name, "arguments": string(tc.Arguments)}}}}, nil))
 		}
 		emit(base(map[string]any{}, "tool_calls"))
-		fmt.Fprint(w, "data: [DONE]\n\n")
+		_ = sseSafeRaw(w, flusher, "data: [DONE]\n\n")
 		return nil
 	}
 	jsonOut(w, map[string]any{"id": id, "object": "chat.completion", "model": model, "choices": []any{map[string]any{"index": 0, "message": msg, "finish_reason": "tool_calls"}}, "m365": compatM365Metadata(res)})

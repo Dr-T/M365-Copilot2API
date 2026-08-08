@@ -236,3 +236,9 @@ func (cm *conversationManager) ShouldCleanup() bool {
 func (cm *conversationManager) Mode() ConversationCleanupMode {
 	return cm.mode
 }
+
+func (cm *conversationManager) SetMode(mode ConversationCleanupMode) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.mode = mode
+}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -46,10 +47,13 @@ func writeAnthropicResult(w http.ResponseWriter, model string, stream bool, src 
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	f, _ := w.(http.Flusher)
+	aborted := false
 	emit := func(n string, v any) {
-		writeSSE(w, n, v)
-		if f != nil {
-			f.Flush()
+		if aborted {
+			return
+		}
+		if err := sseWriteFrame(w, f, n, v); err != nil {
+			aborted = true
 		}
 	}
 	emit("message_start", map[string]any{"type": "message_start", "message": map[string]any{"id": id, "type": "message", "role": "assistant", "model": model, "content": []any{}, "stop_reason": nil, "usage": map[string]any{"input_tokens": 0, "output_tokens": 0}}})
@@ -70,4 +74,45 @@ func writeAnthropicResult(w http.ResponseWriter, model string, stream bool, src 
 	}
 	emit("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": stop, "stop_sequence": nil}, "usage": map[string]any{"output_tokens": 0}})
 	emit("message_stop", map[string]any{"type": "message_stop"})
+}
+
+// sseWriteFrame writes one SSE frame and flushes; a write error (client gone,
+// deadline exceeded) aborts the stream instead of leaving the handler blocked.
+func sseWriteFrame(w http.ResponseWriter, f http.Flusher, name string, value any) error {
+	b, _ := json.Marshal(value)
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Now().Add(30 * time.Second))
+	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, b); err != nil {
+		return err
+	}
+	if f != nil {
+		f.Flush()
+	}
+	return nil
+}
+
+// sseDataRaw writes a raw "data: ..." frame with the same write deadline.
+func sseDataRaw(w http.ResponseWriter, f http.Flusher, data string) error {
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Now().Add(30 * time.Second))
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+		return err
+	}
+	if f != nil {
+		f.Flush()
+	}
+	return nil
+}
+
+// sseSafeRaw writes a pre-formatted frame (e.g. ": connected" or "[DONE]").
+func sseSafeRaw(w http.ResponseWriter, f http.Flusher, payload string) error {
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Now().Add(30 * time.Second))
+	if _, err := fmt.Fprint(w, payload); err != nil {
+		return err
+	}
+	if f != nil {
+		f.Flush()
+	}
+	return nil
 }

@@ -46,7 +46,7 @@ func (s *Server) conversationCleanup(w http.ResponseWriter, r *http.Request) {
 	}
 	if json.NewDecoder(r.Body).Decode(&body) == nil {
 		if body.Mode != "" {
-			s.conversationManager = openConversationManager()
+			s.conversationManager.SetMode(ConversationCleanupMode(body.Mode))
 		}
 	}
 	cleaned := s.conversationManager.Cleanup()

@@ -56,14 +56,8 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
 	flusher, _ := w.(http.Flusher)
-	emit := func(name string, v any) {
-		if r.Context().Err() != nil {
-			return
-		}
-		writeSSE(w, name, v)
-		if flusher != nil {
-			flusher.Flush()
-		}
+	emit := func(name string, v any) error {
+		return writeSSE(r, w, flusher, name, v)
 	}
 	id := "resp_" + uuid.NewString()
 	created := time.Now().Unix()
