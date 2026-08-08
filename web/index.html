@@ -1019,6 +1019,7 @@ function ugPage(delta){
 let useKeyId='',useKeyPrefix='',modelTestKey='';const ukeClients=[
   {id:'curl',label:'curl'},
   {id:'codex',label:'Codex CLI'},
+  {id:'claude',label:'Claude Code'},
   {id:'opencode',label:'OpenCode'},
 ];
 const ukeOs=[{id:'unix',label:'macOS / Linux'},{id:'win',label:'Windows'}];
@@ -1037,7 +1038,7 @@ async function openUseKey(id){
 }
 function closeUseKey(){$('useKeyModal').classList.remove('open');}
 function renderUkeTabs(){
-  $('useKeyClients').innerHTML=ukeClients.map(c=>`<button class="uke-tab ${c.id===ukeClient?'active':''}" onclick="ukeClient='${c.id}';renderUkeTabs();renderUkeFiles()"><i data-lucide="${c.id==='codex'?'terminal':c.id==='curl'?'square-terminal':'braces'}"></i>${c.label}</button>`).join('');
+  $('useKeyClients').innerHTML=ukeClients.map(c=>`<button class="uke-tab ${c.id===ukeClient?'active':''}" onclick="ukeClient='${c.id}';renderUkeTabs();renderUkeFiles()"><i data-lucide="${c.id==='codex'?'terminal':c.id==='curl'?'square-terminal':c.id==='claude'?'sparkles':'braces'}"></i>${c.label}</button>`).join('');
   $('useKeyOs').innerHTML=ukeOs.map(o=>`<button class="uke-tab ${o.id===ukeOsSel?'active':''}" onclick="ukeOsSel='${o.id}';renderUkeFiles()">${o.label}</button>`).join('');
   try{lucide.createIcons();}catch(e){}
 }
@@ -1079,6 +1080,16 @@ goals = true`;
     }else{
       html+=ukeFile('Terminal',`export OPENAI_API_KEY="${key}"`);
     }
+  }else if(ukeClient==='claude'){
+    const cfg=`{
+  "env": {
+    "ANTHROPIC_BASE_URL": "${base}",
+    "ANTHROPIC_AUTH_TOKEN": "${key}",
+    "ANTHROPIC_MODEL": "claude-sonnet"
+  }
+}`;
+    html=ukeFile(ukeOsSel==='unix'?'~/.claude/settings.json':'%USERPROFILE%\\.claude\\settings.json',cfg);
+    html+=ukeFile(ukeOsSel==='unix'?'Terminal':'PowerShell',(ukeOsSel==='win'?'$env:ANTHROPIC_AUTH_TOKEN="'+key+'"':'export ANTHROPIC_AUTH_TOKEN="'+key+'"'));
   }else if(ukeClient==='opencode'){
     const cfg=`{
   "$schema": "https://opencode.ai/config.json",
@@ -1218,11 +1229,7 @@ async function proxyTest(){
 async function loadModelTest(){
   $('modelTestRows').innerHTML='<tr><td colspan="4" class="empty">加载中...</td></tr>';
   try{
-    const kd=await api('/api/admin/keys');
-    const k=(kd.keys||[]).find(x=>!x.revoked&&x.raw);
-    if(!k){$('modelTestRows').innerHTML='<tr><td colspan="4" class="empty">请先创建 API Key</td></tr>';return;}
-    modelTestKey=k.raw;
-    const d=await api('/v1/models',{headers:{Authorization:'Bearer '+modelTestKey}});
+    const d=await api('/api/admin/models');
     const models=d.data||[];
     if(!models.length){$('modelTestRows').innerHTML='<tr><td colspan="4" class="empty">暂无可用模型</td></tr>';return;}
     $('modelTestRows').innerHTML=models.map(m=>`<tr data-model="${esc(m.id)}"><td><b>${esc(m.id)}</b></td><td><span class="status"><i></i>未测试</span></td><td style="font-size:12px;color:var(--muted)">-</td><td style="font-size:12px;color:var(--muted)">点击"测试全部"</td></tr>`).join('');
@@ -1236,12 +1243,12 @@ async function modelTestOne(id,row){
   lat.textContent='-';reply.textContent='';
   const start=performance.now();
   try{
-    const d=await api('/v1/chat/completions',{method:'POST',headers:{Authorization:'Bearer '+modelTestKey},body:JSON.stringify({model:id,messages:[{role:'user',content:'Say "OK" in one word.'}]})});
+    const d=await api('/api/admin/models/test',{method:'POST',body:JSON.stringify({model:id})});
     const ms=Math.round(performance.now()-start);
-    const content=d.choices&&d.choices[0]&&d.choices[0].message&&d.choices[0].message.content;
+    const content=d.reply||'（空回复）';
     badge.innerHTML='<span class="status online"><i></i>正常</span>';
     lat.textContent=ms+' ms';
-    reply.textContent=String(content||'（空回复）').slice(0,80);
+    reply.textContent=String(content).slice(0,80);
   }catch(e){
     badge.innerHTML='<span class="status offline"><i></i>失败</span>';
     lat.textContent=Math.round(performance.now()-start)+' ms';

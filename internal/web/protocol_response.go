@@ -25,6 +25,9 @@ func writeAnthropicResult(w http.ResponseWriter, model string, stream bool, src 
 	msg, finish := openAIChoice(src)
 	blocks := []any{}
 	stop := "end_turn"
+	if reasoning, _ := msg["reasoning_content"].(string); reasoning != "" {
+		blocks = append(blocks, map[string]any{"type": "thinking", "thinking": reasoning, "signature": ""})
+	}
 	if calls, ok := msg["tool_calls"].([]any); ok {
 		stop = "tool_use"
 		for _, raw := range calls {
@@ -37,7 +40,28 @@ func writeAnthropicResult(w http.ResponseWriter, model string, stream bool, src 
 			blocks = append(blocks, map[string]any{"type": "tool_use", "id": tc["id"], "name": fn["name"], "input": input})
 		}
 	} else {
-		blocks = append(blocks, map[string]any{"type": "text", "text": fmt.Sprint(msg["content"])})
+		switch content := msg["content"].(type) {
+		case []any:
+			for _, raw := range content {
+				part, _ := raw.(map[string]any)
+				switch part["type"] {
+				case "text":
+					if t, _ := part["text"].(string); t != "" {
+						blocks = append(blocks, map[string]any{"type": "text", "text": t})
+					}
+				case "image_url":
+					img, _ := part["image_url"].(map[string]any)
+					if u, _ := img["url"].(string); u != "" {
+						blocks = append(blocks, map[string]any{"type": "image", "source": map[string]any{"type": "url", "url": u}})
+					}
+				}
+			}
+		default:
+			blocks = append(blocks, map[string]any{"type": "text", "text": fmt.Sprint(content)})
+		}
+		if len(blocks) == 0 {
+			blocks = append(blocks, map[string]any{"type": "text", "text": ""})
+		}
 	}
 	_ = finish
 	out := map[string]any{"id": id, "type": "message", "role": "assistant", "model": model, "content": blocks, "stop_reason": stop, "stop_sequence": nil, "usage": map[string]any{"input_tokens": 0, "output_tokens": 0}, "m365": map[string]any{"usage_source": "unavailable_from_chathub", "usage_values_are_placeholders": true}}
@@ -60,15 +84,27 @@ func writeAnthropicResult(w http.ResponseWriter, model string, stream bool, src 
 	for i, b := range blocks {
 		m, _ := b.(map[string]any)
 		startBlock := b
-		if m["type"] == "tool_use" {
+		blockType := ""
+		if t, _ := m["type"].(string); t != "" {
+			blockType = t
+		}
+		switch blockType {
+		case "tool_use":
 			startBlock = map[string]any{"type": "tool_use", "id": m["id"], "name": m["name"], "input": map[string]any{}}
+		case "thinking":
+			startBlock = map[string]any{"type": "thinking", "thinking": "", "signature": ""}
+		case "image":
+			startBlock = map[string]any{"type": "image", "source": m["source"]}
 		}
 		emit("content_block_start", map[string]any{"type": "content_block_start", "index": i, "content_block": startBlock})
-		if m["type"] == "text" {
+		switch blockType {
+		case "text":
 			emit("content_block_delta", map[string]any{"type": "content_block_delta", "index": i, "delta": map[string]any{"type": "text_delta", "text": m["text"]}})
-		} else if m["type"] == "tool_use" {
+		case "tool_use":
 			partial, _ := json.Marshal(m["input"])
 			emit("content_block_delta", map[string]any{"type": "content_block_delta", "index": i, "delta": map[string]any{"type": "input_json_delta", "partial_json": string(partial)}})
+		case "thinking":
+			emit("content_block_delta", map[string]any{"type": "content_block_delta", "index": i, "delta": map[string]any{"type": "thinking_delta", "thinking": m["thinking"]}})
 		}
 		emit("content_block_stop", map[string]any{"type": "content_block_stop", "index": i})
 	}
