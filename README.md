@@ -25,6 +25,28 @@ M365 Copilot2API 是一个用 Go 编写的自托管网关，把微软 365 Copilo
 > - 本项目**仅供个人学习与研究**，**禁止用于商业转售或规模化运营**。
 > - 账号被封禁、数据丢失等任何损失，本项目维护者与贡献者**概不负责**。
 
+## 界面预览
+
+<p align="center"><img src="docs/screenshots/02-dashboard.png" alt="仪表盘" style="max-width:860px;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,.18)"></p>
+
+<table>
+  <tr>
+    <td align="center" width="33%"><img src="docs/screenshots/01-login.png" alt="登录页" style="border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.12)"><br><sub><b>登录</b></sub></td>
+    <td align="center" width="33%"><img src="docs/screenshots/03-usage.png" alt="用量统计" style="border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.12)"><br><sub><b>用量统计</b></sub></td>
+    <td align="center" width="33%"><img src="docs/screenshots/04-accounts.png" alt="账号管理" style="border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.12)"><br><sub><b>账号管理</b></sub></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%"><img src="docs/screenshots/05-apikeys.png" alt="API Keys" style="border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.12)"><br><sub><b>API Keys</b></sub></td>
+    <td align="center" width="33%"><img src="docs/screenshots/06-conversations.png" alt="对话管理" style="border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.12)"><br><sub><b>对话管理</b></sub></td>
+    <td align="center" width="33%"><img src="docs/screenshots/07-proxies.png" alt="代理池" style="border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.12)"><br><sub><b>代理池</b></sub></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%"><img src="docs/screenshots/08-modeltest.png" alt="模型测试" style="border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.12)"><br><sub><b>模型测试</b></sub></td>
+    <td align="center" width="33%"><img src="docs/screenshots/09-settings.png" alt="设置" style="border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.12)"><br><sub><b>设置</b></sub></td>
+    <td align="center" width="33%"><sub><i>更多功能，等你发现</i></sub></td>
+  </tr>
+</table>
+
 ## 功能特性
 
 | 功能 | 说明 |
