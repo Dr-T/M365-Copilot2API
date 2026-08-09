@@ -1,8 +1,6 @@
 package web
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,6 +8,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 type toolEvidence struct {
@@ -46,9 +46,13 @@ func compactToolResult(s string, limit int) string {
 	}
 	return s[:head] + fmt.Sprintf("\n... [truncated %d bytes] ...\n", len(s)-head-tail) + s[len(s)-tail:]
 }
+// scopedCallID returns a globally unique tool call id. The scope parameters
+// are kept for signature compatibility with callers that pass per-turn
+// context; the id itself must not depend on call content or scope text,
+// otherwise repeating the same tool+arguments across turns collides
+// (duplicate tool call id errors from clients).
 func scopedCallID(name, args string, index int, scope string) string {
-	h := sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%s:%s", scope, index, name, args)))
-	return "call_" + hex.EncodeToString(h[:8])
+	return "call_" + uuid.NewString()
 }
 func buildAgentLedger(messages []oaiMsg) agentLedger {
 	calls := map[string]toolEvidence{}

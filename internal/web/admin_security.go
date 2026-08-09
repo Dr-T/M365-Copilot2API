@@ -36,6 +36,15 @@ func loadAdminPassword() (string, bool) {
 	// The writable persisted value takes precedence over bootstrap sources.
 	if b, e := os.ReadFile(adminPasswordPath()); e == nil && strings.TrimSpace(string(b)) != "" {
 		p := strings.TrimSpace(string(b))
+		if p == defaultAdminPassword {
+			// A leftover persisted file holding the default password (for
+			// example a clone of a previously initialized data directory)
+			// must not silently defeat an explicit M365_ADMIN_PASSWORD.
+			if envP := strings.TrimSpace(os.Getenv("M365_ADMIN_PASSWORD")); envP != "" {
+				_ = saveAdminPassword(envP)
+				return envP, envP == defaultAdminPassword
+			}
+		}
 		return p, p == defaultAdminPassword
 	}
 	if bootstrap := strings.TrimSpace(os.Getenv("M365_ADMIN_PASSWORD_BOOTSTRAP_FILE")); bootstrap != "" {

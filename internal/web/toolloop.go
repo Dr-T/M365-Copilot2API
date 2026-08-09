@@ -1,11 +1,11 @@
 package web
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 type detectedToolCall struct {
@@ -58,9 +58,11 @@ func toolChoiceAllows(choice any, name string) bool {
 	return true
 }
 
+// callID returns a globally unique tool call id. Content hashes previously
+// collided when the same tool+arguments was invoked again (duplicate tool call
+// id errors from clients), so uniqueness must not depend on call content.
 func callID(name, args string, index int) string {
-	h := sha256.Sum256([]byte(fmt.Sprintf("%d:%s:%s", index, name, args)))
-	return "call_" + hex.EncodeToString(h[:8])
+	return "call_" + uuid.NewString()
 }
 
 func extractToolCalls(text string, tools []map[string]any, choice any) ([]detectedToolCall, bool) {

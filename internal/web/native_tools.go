@@ -1,10 +1,9 @@
 package web
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
+
+	"github.com/google/uuid"
 
 	"m365-copilot2api/internal/chathub"
 )
@@ -54,8 +53,7 @@ func walkNative(v any, allowed map[string]bool, out *[]detectedToolCall) {
 			}
 			if a != nil {
 				b, _ := json.Marshal(a)
-				h := sha256.Sum256([]byte(fmt.Sprintf("%s:%s", name, b)))
-				*out = append(*out, detectedToolCall{ID: "call_" + hex.EncodeToString(h[:8]), Name: name, Arguments: b})
+				*out = append(*out, detectedToolCall{ID: "call_" + uuid.NewString(), Name: name, Arguments: b})
 				return
 			}
 		}
