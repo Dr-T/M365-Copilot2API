@@ -123,6 +123,28 @@ func (s *apiKeyStore) revoke(id string) (bool, error) {
 	return false, nil
 }
 
+// delete physically removes a key record, rolling back on persistence failure.
+func (s *apiKeyStore) delete(id string) (bool, error) {
+	s.mu.Lock()
+	for i := range s.Keys {
+		if s.Keys[i].ID != id {
+			continue
+		}
+		removed := s.Keys[i]
+		s.Keys = append(s.Keys[:i], s.Keys[i+1:]...)
+		s.mu.Unlock()
+		if err := s.persist.flushNowBlocking(); err != nil {
+			s.mu.Lock()
+			s.Keys = append(s.Keys[:i], append([]apiKeyRecord{removed}, s.Keys[i:]...)...)
+			s.mu.Unlock()
+			return false, err
+		}
+		return true, nil
+	}
+	s.mu.Unlock()
+	return false, nil
+}
+
 func (s *apiKeyStore) update(id, name string, revoked *bool) (bool, error) {
 	s.mu.Lock()
 	found := false
