@@ -190,6 +190,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/v1/sessions", s.handleSessions)
 	m.HandleFunc("/v1/sessions/", s.handleSessionDelete)
 	m.HandleFunc("/api/m365/conversations", s.handleM365Conversations)
+	m.HandleFunc("/api/m365/conversations/detail", s.handleM365ConversationDetail)
 	m.HandleFunc("/api/m365/conversations/delete", s.handleM365Delete)
 	m.HandleFunc("/api/m365/conversations/cleanup", s.handleM365Cleanup)
 	m.HandleFunc("/api/stats", s.handleCacheStats)
@@ -949,11 +950,12 @@ func (s *Server) openaiModels(w http.ResponseWriter, r *http.Request) {
 }
 
 type oaiMsg struct {
-	Role       string           `json:"role"`
-	Content    any              `json:"content"`
-	Name       string           `json:"name,omitempty"`
-	ToolCallID string           `json:"tool_call_id,omitempty"`
-	ToolCalls  []map[string]any `json:"tool_calls,omitempty"`
+	Role             string           `json:"role"`
+	Content          any              `json:"content"`
+	Name             string           `json:"name,omitempty"`
+	ToolCallID       string           `json:"tool_call_id,omitempty"`
+	ToolCalls        []map[string]any `json:"tool_calls,omitempty"`
+	ReasoningContent string           `json:"reasoning_content,omitempty"`
 }
 
 type oaiReq struct {
@@ -1778,7 +1780,13 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 	if res.ConversationID == "" {
 		return
 	}
-	s.sessionResolver.Bind(res.SessionID, res.ConversationID, acc.ID, body, res.Text, r)
+	historyBody := *body
+	historyBody.Messages = append(cloneMessages(body.Messages), oaiMsg{
+		Role:             "assistant",
+		Content:          res.Text,
+		ReasoningContent: res.Reasoning,
+	})
+	s.sessionResolver.Bind(res.SessionID, res.ConversationID, acc.ID, &historyBody, "", r)
 	s.conversationManager.Record(res.ConversationID, acc.ID, prompt)
 	if s.conversationManager.ShouldCleanup() {
 		if cleaned := s.conversationManager.Cleanup(); len(cleaned) > 0 {
