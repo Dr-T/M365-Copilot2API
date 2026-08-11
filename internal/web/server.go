@@ -1358,6 +1358,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if IsRateLimited(err) {
 				msg = "upstream is rate limiting; try again shortly"
 			}
+			msg = sanitizePublicInternalText(msg)
 			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": "rate_limit"}})+"\n\n")
 			_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 			return
@@ -1576,6 +1577,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			if IsRateLimited(err) {
 				msg = "upstream is rate limiting; try again shortly"
 			}
+			msg = sanitizePublicInternalText(msg)
 			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": "rate_limit"}})+"\n\n")
 		}
 		pt := EstimateTokens(prompt)
