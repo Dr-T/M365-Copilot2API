@@ -10,7 +10,9 @@ func writeToolResponse(w http.ResponseWriter, id, model string, stream bool, cal
 	toolCalls := toolCallMaps(calls)
 	msg := map[string]any{"role": "assistant", "content": nil, "tool_calls": toolCalls}
 	if res.Reasoning != "" {
-		msg["reasoning_content"] = res.Reasoning
+		if reasoning := sanitizePublicReasoningText(res.Reasoning); reasoning != "" {
+			msg["reasoning_content"] = reasoning
+		}
 	}
 	pt := EstimateTokens(res.Text)
 	for _, tc := range calls {

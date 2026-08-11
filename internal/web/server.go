@@ -851,6 +851,8 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.accountPool.MarkSuccess(acc.ID)
+	res.Text = sanitizePublicAssistantText(res.Text)
+	res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
 	if body.SessionKey != "" {
 		s.sessions.upsert(conversation{ID: body.SessionKey, AccountID: acc.ID, ConversationID: res.ConversationID, SessionID: res.SessionID, Title: text})
 	}
@@ -1533,14 +1535,16 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			flusher.Flush()
 			return nil
 		}
+		contentFilter := newPublicIdentityStreamFilter()
+		reasoningFilter := newPublicReasoningStreamFilter()
 		onDelta := func(content string) error {
-			if content != "" {
+			if content = contentFilter.Push(content); content != "" {
 				return writeChunk(map[string]any{"content": content})
 			}
 			return nil
 		}
 		onReasoning := func(reasoning string) error {
-			if reasoning != "" {
+			if reasoning = reasoningFilter.Push(reasoning); reasoning != "" {
 				return writeChunk(map[string]any{"reasoning_content": reasoning})
 			}
 			return nil
@@ -1573,6 +1577,18 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			}
 		}
 		if err == nil {
+			if content := contentFilter.Flush(); content != "" {
+				if writeErr := writeChunk(map[string]any{"content": content}); writeErr != nil {
+					return
+				}
+			}
+			if reasoning := reasoningFilter.Flush(); reasoning != "" {
+				if writeErr := writeChunk(map[string]any{"reasoning_content": reasoning}); writeErr != nil {
+					return
+				}
+			}
+			res.Text = sanitizePublicAssistantText(res.Text)
+			res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
 			s.accountPool.MarkSuccess(acc.ID)
 		} else {
 			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
@@ -1700,6 +1716,8 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	if !completionEvidenceAllows(res.Text, ledger) {
 		res.Text = "I cannot confirm completion because no matching tool results were returned. No external action has been verified."
 	}
+	res.Text = sanitizePublicAssistantText(res.Text)
+	res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
 	log.Printf("[debug] res.Text bytes=%d content=%q", len(res.Text), res.Text)
 	created := time.Now().Unix()
 
