@@ -932,7 +932,7 @@ func (s *Server) adminModelTest(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadGateway, "m365_error", upstreamError(err))
 		return
 	}
-	jsonOut(w, map[string]any{"ok": true, "model": b.Model, "reply": res.Text, "latency_ms": ms})
+	jsonOut(w, map[string]any{"ok": true, "model": b.Model, "reply": sanitizePublicAssistantTextForModel(res.Text, b.Model), "latency_ms": ms})
 }
 
 func (s *Server) openaiModels(w http.ResponseWriter, r *http.Request) {
@@ -1229,7 +1229,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		var pending strings.Builder
 		var streamedTools []detectedToolCall
 		first := true
+		identityFilter := newPublicIdentityStreamFilter(model)
 		emitText := func(part string) error {
+			if part == "" {
+				return nil
+			}
+			part = identityFilter.Push(part)
 			if part == "" {
 				return nil
 			}
@@ -1535,7 +1540,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			flusher.Flush()
 			return nil
 		}
-		contentFilter := newPublicIdentityStreamFilter()
+		contentFilter := newPublicIdentityStreamFilter(firstNonEmpty(body.Model, defaultPublicModelName))
 		reasoningFilter := newPublicReasoningStreamFilter()
 		onDelta := func(content string) error {
 			if content = contentFilter.Push(content); content != "" {
@@ -1587,7 +1592,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					return
 				}
 			}
-			res.Text = sanitizePublicAssistantText(res.Text)
+			res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
 			res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
 			s.accountPool.MarkSuccess(acc.ID)
 		} else {
@@ -1716,7 +1721,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	if !completionEvidenceAllows(res.Text, ledger) {
 		res.Text = "I cannot confirm completion because no matching tool results were returned. No external action has been verified."
 	}
-	res.Text = sanitizePublicAssistantText(res.Text)
+	res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
 	res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
 	log.Printf("[debug] res.Text bytes=%d content=%q", len(res.Text), res.Text)
 	created := time.Now().Unix()
