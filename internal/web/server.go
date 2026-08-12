@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -32,10 +33,44 @@ type pendingPKCE struct {
 }
 
 // rateLimitCooldown is how long a rate-limited account stays out of rotation.
-const rateLimitCooldown = 2 * time.Minute
+const rateLimitCooldown = 15 * time.Minute
 
 // maxAccountProbe bounds the round-robin walk when skipping unhealthy accounts.
 const maxAccountProbe = 16
+
+const rateLimitProbePrompt = "Reply with exactly: OK"
+
+// confirmRateLimitNotice verifies a text-channel rate-limit notice with a
+// separate, fresh ChatHub conversation. A single notice is not enough to cool
+// down an account because the upstream can occasionally emit a false positive.
+func (s *Server) confirmRateLimitNotice(ctx context.Context, acc auth.AccountToken, noticeErr error) (bool, error) {
+	if !errors.Is(noticeErr, chathub.ErrRateLimitNotice) {
+		return IsRateLimited(noticeErr), noticeErr
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	_, probeErr := s.chat.Chat(probeCtx, chathub.Account{
+		AccessToken: acc.AccessToken,
+		OID:         acc.OID,
+		TID:         acc.TID,
+	}, chathub.Request{
+		Text:    rateLimitProbePrompt,
+		Tone:    "magic",
+		Started: true,
+	})
+	if probeErr == nil {
+		return false, nil
+	}
+	if errors.Is(probeErr, chathub.ErrRateLimitNotice) || IsRateLimited(probeErr) {
+		return true, &UpstreamHTTPError{
+			Status:     http.StatusTooManyRequests,
+			RetryAfter: int(rateLimitCooldown.Seconds()),
+		}
+	}
+	return false, probeErr
+}
 
 type Server struct {
 	mu                  sync.Mutex
@@ -1029,9 +1064,11 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// 内容键会话复用：命中后云端对话已存全量历史，只需把客户端新增的
 	// 消息拼成增量 prompt 发送（对齐 DeepSeek 上下文缓存语义）。
 	answerPrompt := prompt
+	resolvedConversationID := ""
 	if body.ConversationID == "" && len(body.Messages) > 0 {
 		resolved := s.sessionResolver.Resolve(r, &body)
 		if !resolved.IsNew {
+			resolvedConversationID = resolved.ConversationID
 			body.ConversationID = resolved.ConversationID
 			body.SessionID = resolved.SessionID
 			body.AccountID = firstNonEmpty(body.AccountID, resolved.AccountID)
@@ -1212,6 +1249,71 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}
 			return nil
 		})
+		if err != nil && body.AccountID == "" && (body.ConversationID == "" || body.ConversationID == resolvedConversationID) && (IsRateLimited(err) || IsAuthFailure(err)) {
+			// A throttled stream may retry on the next healthy account: only the
+			// ": connected" preamble reached the client, so the retried stream is
+			// indistinguishable from a fresh request.
+			next, nerr := s.nextHealthyAccount(acc.ID)
+			if nerr != nil {
+				// no healthy alternative
+			} else {
+				failoverReq := answerReq
+				if body.ConversationID == resolvedConversationID {
+					failoverReq.ConversationID = ""
+					failoverReq.SessionID = ""
+				}
+				ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
+				defer cancel2()
+				res2, err2 := s.chat.ChatWithEvents(ctx2, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq, func(ev chathub.StreamEvent) error {
+					if ev.Kind == "tool" && ev.ToolName != "" && len(ev.Arguments) > 0 {
+						streamedTools = append(streamedTools, detectedToolCall{ID: "call_" + uuid.NewString(), Name: ev.ToolName, Arguments: ev.Arguments})
+						return nil
+					}
+					if ev.Kind != "text" || ev.Text == "" {
+						return nil
+					}
+					text.WriteString(ev.Text)
+					pending.WriteString(ev.Text)
+					v := pending.String()
+					if strings.Contains(v, "```bash") || strings.Contains(v, "\"command\"") {
+						return nil
+					}
+					if i := strings.Index(v, "```"); i >= 0 {
+						if err := emitText(v[:i]); err != nil {
+							return err
+						}
+						pending.Reset()
+						pending.WriteString(v[i:])
+						return nil
+					}
+					if runeCount := utf8.RuneCountInString(v); runeCount > 8 {
+						cut := 0
+						seen := 0
+						for i := range v {
+							if seen == runeCount-8 {
+								cut = i
+								break
+							}
+							seen++
+						}
+						if err := emitText(v[:cut]); err != nil {
+							return err
+						}
+						pending.Reset()
+						pending.WriteString(v[cut:])
+					}
+					return nil
+				})
+				if err2 == nil {
+					res = res2
+					acc = next
+					err = nil
+				} else {
+					err = err2
+					s.accountPool.MarkFailure(next.ID, err2, rateLimitCooldown)
+				}
+			}
+		}
 		if err != nil {
 			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
 			s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
@@ -1372,6 +1474,29 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			return
 		}
 		res, err = s.chat.ChatWithReasoning(ctx, account, answerReq, onDelta, onReasoning)
+		if err != nil && body.AccountID == "" && (body.ConversationID == "" || body.ConversationID == resolvedConversationID) && (IsRateLimited(err) || IsAuthFailure(err)) {
+			// Retry a throttled stream on the next healthy account; the client
+			// has only seen the ": connected" preamble so far, so the retry is
+			// indistinguishable from a fresh request.
+			next, nerr := s.nextHealthyAccount(acc.ID)
+			if nerr == nil {
+				failoverReq := answerReq
+				if body.ConversationID == resolvedConversationID {
+					failoverReq.ConversationID = ""
+					failoverReq.SessionID = ""
+				}
+				ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
+				defer cancel2()
+				if res2, err2 := s.chat.ChatWithReasoning(ctx2, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq, onDelta, onReasoning); err2 == nil {
+					res = res2
+					acc = next
+					err = nil
+				} else {
+					err = err2
+					s.accountPool.MarkFailure(next.ID, err2, rateLimitCooldown)
+				}
+			}
+		}
 		if err == nil {
 			s.accountPool.MarkSuccess(acc.ID)
 			_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
@@ -1387,14 +1512,19 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 	} else {
 		res, err = s.chat.Chat(ctx, account, answerReq)
-		if err != nil && body.AccountID == "" && body.ConversationID == "" && (IsRateLimited(err) || IsAuthFailure(err)) {
+		if err != nil && body.AccountID == "" && (body.ConversationID == "" || body.ConversationID == resolvedConversationID) && (IsRateLimited(err) || IsAuthFailure(err)) {
 			// Failover only when nothing pins the request to a conversation or
 			// account; a fresh chat can safely retry on the next healthy account.
 			next, nerr := s.nextHealthyAccount(acc.ID)
 			if nerr == nil {
+				failoverReq := answerReq
+				if body.ConversationID == resolvedConversationID {
+					failoverReq.ConversationID = ""
+					failoverReq.SessionID = ""
+				}
 				ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 				defer cancel2()
-				res2, err2 := s.chat.Chat(ctx2, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, answerReq)
+				res2, err2 := s.chat.Chat(ctx2, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq)
 				if err2 == nil {
 					res = res2
 					acc = next
@@ -1557,7 +1687,7 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 	if res.ConversationID == "" {
 		return
 	}
-	s.sessionResolver.Bind("", res.ConversationID, acc.ID, body, r)
+	s.sessionResolver.Bind(res.SessionID, res.ConversationID, acc.ID, body, res.Text, r)
 	s.conversationManager.Record(res.ConversationID, acc.ID, prompt)
 	if s.conversationManager.ShouldCleanup() {
 		if cleaned := s.conversationManager.Cleanup(); len(cleaned) > 0 {

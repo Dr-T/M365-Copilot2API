@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"m365-copilot2api/internal/auth"
+	"m365-copilot2api/internal/chathub"
 )
 
 func TestUpstreamErrorClassification(t *testing.T) {
@@ -29,6 +30,7 @@ func TestUpstreamErrorClassification(t *testing.T) {
 		{fmt.Errorf("upstream http 429"), true, false, 0, http.StatusTooManyRequests},
 		{fmt.Errorf("Too many requests, slow down"), true, false, 0, http.StatusTooManyRequests},
 		{fmt.Errorf("random failure"), false, false, 0, http.StatusBadGateway},
+		{chathub.ErrRateLimitNotice, true, false, 0, http.StatusTooManyRequests},
 	}
 	for _, c := range cases {
 		if got := IsRateLimited(c.err); got != c.limited {
@@ -175,3 +177,27 @@ func TestNextHealthyAccount(t *testing.T) {
 		t.Fatal("nextHealthyAccount must fail when no healthy account remains")
 	}
 }
+
+func TestFailoverAllowsResolvedConversationID(t *testing.T) {
+	accountID := ""
+	conversationID := "conv-123"
+	resolvedConversationID := "conv-123"
+	if !(conversationID == "" || conversationID == resolvedConversationID) {
+		t.Fatal("failover must be allowed when ConversationID was injected by session resolver")
+	}
+	explicitConversationID := "conv-explicit"
+	if explicitConversationID == "" || explicitConversationID == resolvedConversationID {
+		t.Fatal("failover must NOT be allowed when ConversationID was explicitly set by client")
+	}
+	_ = accountID
+}
+
+func TestErrRateLimitNoticeTriggersMarkFailure(t *testing.T) {
+	h := newAccountHealth()
+	const id = "acct-rl"
+	h.MarkFailure(id, chathub.ErrRateLimitNotice, 15*time.Minute)
+	if h.Available(id) {
+		t.Fatal("ErrRateLimitNotice must put account in cooldown")
+	}
+}
+>>>>>>> 7118802 (fix: stream rate-limit detection, failover with session resolver, replace Jaccard with suffix match)

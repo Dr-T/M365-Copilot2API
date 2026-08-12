@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"m365-copilot2api/internal/chathub"
 )
 
 // UpstreamHTTPError carries the HTTP status of a failed upstream request so
@@ -27,6 +29,9 @@ func (e *UpstreamHTTPError) Error() string {
 func IsRateLimited(err error) bool {
 	if err == nil {
 		return false
+	}
+	if errors.Is(err, chathub.ErrRateLimitNotice) {
+		return true
 	}
 	var httpErr *UpstreamHTTPError
 	if errors.As(err, &httpErr) {
