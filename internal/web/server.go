@@ -207,7 +207,7 @@ func (s *Server) Routes() http.Handler {
 
 func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/admin/login" || r.URL.Path == "/api/admin/session" || r.URL.Path == "/api/admin/change-password" || r.URL.Path == "/api/admin/logout" || r.URL.Path == "/" || r.URL.Path == "/login" {
+		if r.URL.Path == "/api/admin/login" || r.URL.Path == "/api/admin/session" || r.URL.Path == "/api/admin/change-password" || r.URL.Path == "/api/admin/logout" || r.URL.Path == "/api/auth/start" || r.URL.Path == "/api/auth/status" || r.URL.Path == "/api/auth/callback" || r.URL.Path == "/" || r.URL.Path == "/login" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -1384,6 +1384,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[req-trace] id=%s stage=stream_write err=%v", requestID, err)
 			return
 		}
+		finishChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}}
+		_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(finishChunk)+"\n\n")
 		_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 		if body.User != "" && res.ConversationID != "" {
 			s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
@@ -1412,6 +1414,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		calls = filterCompletedCalls(calls, ledger)
 		if len(calls) > 0 {
 			scope := fmt.Sprintf("%d:%v", len(body.Messages), completedCallIDs(ledger))
 			for i := range calls {
@@ -1533,7 +1536,6 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 		if err == nil {
 			s.accountPool.MarkSuccess(acc.ID)
-			_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 		} else {
 			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
 			s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
@@ -1542,8 +1544,17 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				msg = "upstream is rate limiting; try again shortly"
 			}
 			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": "rate_limit"}})+"\n\n")
-			_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 		}
+		pt := EstimateTokens(prompt)
+		ct := EstimateTokens(res.Text)
+		log.Printf("[usage] stream id=%s pt=%d ct=%d res.Text=%d", id, pt, ct, len(res.Text))
+		finish := "stop"
+		if err != nil {
+			finish = "stop"
+		}
+		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finish}}, "usage": map[string]any{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}}
+		_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(usageChunk)+"\n\n")
+		_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 	} else {
 		res, err = s.chat.Chat(ctx, account, answerReq)
 		if err != nil && body.AccountID == "" && (body.ConversationID == "" || body.ConversationID == resolvedConversationID) && (IsRateLimited(err) || IsAuthFailure(err)) {
@@ -1605,6 +1616,14 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		model = "m365-copilot"
 	}
 	id := "chatcmpl-" + uuid.NewString()
+	if len(toolMaps) > 0 && isToolRefusal(res.Text) {
+		log.Printf("[tool-eject] model refused tools, retrying with correction")
+		correction := "Your previous response incorrectly denied that caller tools are available. They are real, active, and callable on the caller's Windows machine. Call the appropriate tool now. Do not explain tool availability.\n\nUser request:\n" + prompt
+		res2, err2 := s.chat.Chat(ctx, account, chathub.Request{Text: correction, Tone: tone, Attachments: body.Attachments})
+		if err2 == nil && !isToolRefusal(res2.Text) {
+			res = res2
+		}
+	}
 	if calls := fencedToolCalls(res.Text, toolMaps, body.ToolChoice); len(calls) > 0 {
 		calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
 		_ = writeToolResponse(w, id, model, body.Stream, calls, res)
@@ -1667,6 +1686,10 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 		b, _ := json.Marshal(chunk)
 		_ = sseRaw(r.Context(), w, flusher, "data: "+string(b)+"\n\n")
+		pt := EstimateTokens(prompt)
+		ct := EstimateTokens(res.Text)
+		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}, "usage": map[string]any{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}}
+		_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(usageChunk)+"\n\n")
 		_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 		return
 	}

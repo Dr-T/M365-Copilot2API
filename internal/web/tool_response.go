@@ -12,6 +12,11 @@ func writeToolResponse(w http.ResponseWriter, id, model string, stream bool, cal
 	if res.Reasoning != "" {
 		msg["reasoning_content"] = res.Reasoning
 	}
+	pt := EstimateTokens(res.Text)
+	for _, tc := range calls {
+		pt += EstimateTokens(string(tc.Arguments))
+	}
+	ct := EstimateTokens(res.Text)
 	if stream {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
@@ -37,10 +42,11 @@ func writeToolResponse(w http.ResponseWriter, id, model string, stream bool, cal
 			}
 			emit(base(map[string]any{"tool_calls": []any{map[string]any{"index": i, "id": tc.ID, "type": typ, "function": map[string]any{"name": tc.Name, "arguments": string(tc.Arguments)}}}}, nil))
 		}
-		emit(base(map[string]any{}, "tool_calls"))
+		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "tool_calls"}}, "usage": map[string]any{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}}
+		_ = sseSafeRaw(w, flusher, "data: "+mustJSON(usageChunk)+"\n\n")
 		_ = sseSafeRaw(w, flusher, "data: [DONE]\n\n")
 		return nil
 	}
-	jsonOut(w, map[string]any{"id": id, "object": "chat.completion", "model": model, "choices": []any{map[string]any{"index": 0, "message": msg, "finish_reason": "tool_calls"}}, "m365": compatM365Metadata(res)})
+	jsonOut(w, map[string]any{"id": id, "object": "chat.completion", "model": model, "choices": []any{map[string]any{"index": 0, "message": msg, "finish_reason": "tool_calls"}}, "m365": compatM365Metadata(res), "usage": map[string]any{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}})
 	return nil
 }

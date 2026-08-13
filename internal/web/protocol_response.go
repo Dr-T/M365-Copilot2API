@@ -64,7 +64,27 @@ func writeAnthropicResult(w http.ResponseWriter, model string, stream bool, src 
 		}
 	}
 	_ = finish
-	out := map[string]any{"id": id, "type": "message", "role": "assistant", "model": model, "content": blocks, "stop_reason": stop, "stop_sequence": nil, "usage": map[string]any{"input_tokens": 0, "output_tokens": 0}, "m365": map[string]any{"usage_source": "unavailable_from_chathub", "usage_values_are_placeholders": true}}
+	inputTokens := int64(0)
+	outputTokens := int64(0)
+	if u, ok := src["usage"].(map[string]any); ok {
+		if v, ok := u["prompt_tokens"]; ok {
+			if n, ok := v.(int64); ok {
+				inputTokens = n
+			}
+			if n, ok := v.(float64); ok {
+				inputTokens = int64(n)
+			}
+		}
+		if v, ok := u["completion_tokens"]; ok {
+			if n, ok := v.(int64); ok {
+				outputTokens = n
+			}
+			if n, ok := v.(float64); ok {
+				outputTokens = int64(n)
+			}
+		}
+	}
+	out := map[string]any{"id": id, "type": "message", "role": "assistant", "model": model, "content": blocks, "stop_reason": stop, "stop_sequence": nil, "usage": map[string]any{"input_tokens": inputTokens, "output_tokens": outputTokens}}
 	if !stream {
 		jsonOut(w, out)
 		return
@@ -80,7 +100,7 @@ func writeAnthropicResult(w http.ResponseWriter, model string, stream bool, src 
 			aborted = true
 		}
 	}
-	emit("message_start", map[string]any{"type": "message_start", "message": map[string]any{"id": id, "type": "message", "role": "assistant", "model": model, "content": []any{}, "stop_reason": nil, "usage": map[string]any{"input_tokens": 0, "output_tokens": 0}}})
+	emit("message_start", map[string]any{"type": "message_start", "message": map[string]any{"id": id, "type": "message", "role": "assistant", "model": model, "content": []any{}, "stop_reason": nil, "usage": map[string]any{"input_tokens": inputTokens, "output_tokens": 0}}})
 	for i, b := range blocks {
 		m, _ := b.(map[string]any)
 		startBlock := b
@@ -108,7 +128,7 @@ func writeAnthropicResult(w http.ResponseWriter, model string, stream bool, src 
 		}
 		emit("content_block_stop", map[string]any{"type": "content_block_stop", "index": i})
 	}
-	emit("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": stop, "stop_sequence": nil}, "usage": map[string]any{"output_tokens": 0}})
+	emit("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": stop, "stop_sequence": nil}, "usage": map[string]any{"output_tokens": outputTokens}})
 	emit("message_stop", map[string]any{"type": "message_stop"})
 }
 

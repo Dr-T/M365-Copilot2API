@@ -267,6 +267,9 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		if len(snapshot) > len(cur) && strings.HasSuffix(snapshot, cur) {
 			return emitDelta(snapshot[:len(snapshot)-len(cur)])
 		}
+		if len(snapshot) <= len(cur) {
+			return nil
+		}
 		return emitDelta(snapshot)
 	}
 	var final string
@@ -593,7 +596,7 @@ func (c *Client) uploadAttachments(ctx context.Context, acc Account, conversatio
 }
 
 func chatPayload(text, sessionID, conversationID, requestID, tone string, firstTurn bool, attachments []Attachment, tools []Tool, toolChoice any, mcpServerURL string) string {
-	text = toolProtocolPrompt(text, tools, toolChoice)
+	text = toolProtocolPrompt(text, tools, toolChoice, len(clientPlugins(tools, mcpServerURL)) > 0)
 	message := map[string]any{
 		"author":                "user",
 		"attachments":           attachments,

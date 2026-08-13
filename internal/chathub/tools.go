@@ -28,7 +28,7 @@ func clientPlugins(tools []Tool, mcpServerURL string) []any {
 		if json.Unmarshal(t.Function, &f) != nil || f.Name == "" {
 			continue
 		}
-		plugins = append(plugins, map[string]any{"Id": f.Name, "Source": "Client", "Description": f.Description, "Parameters": f.Parameters})
+		plugins = append(plugins, map[string]any{"Id": f.Name, "Source": "API", "Description": f.Description, "Parameters": f.Parameters})
 	}
 	return plugins
 }

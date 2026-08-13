@@ -109,3 +109,42 @@ func validateToolResult(messages []oaiMsg, known map[string]bool) error {
 	}
 	return nil
 }
+
+var toolRefusalPatterns = []string{
+	"tools are not available",
+	"tool is not available",
+	"cannot access the Windows path",
+	"only provides Linux",
+	"只提供 Linux 容器",
+	"工具未暴露",
+	"工具不可用",
+	"没有可调用的",
+	"无法继续操作",
+	"will not pretend",
+	"will not fake",
+	"cannot fake",
+	"would be fabricated",
+	"cannot fabricate",
+	"refuse to fabricate",
+	"not actually registered",
+	"not actually available",
+	"not exposed in this",
+	"not available in this session",
+	"cannot execute on this platform",
+	"没有 Windows 执行接口",
+	"回复通道没有",
+	"没有执行接口",
+	"不会虚构",
+	"不会!转入",
+	"不会转入",
+}
+
+func isToolRefusal(text string) bool {
+	low := strings.ToLower(text)
+	for _, p := range toolRefusalPatterns {
+		if strings.Contains(low, strings.ToLower(p)) {
+			return true
+		}
+	}
+	return false
+}

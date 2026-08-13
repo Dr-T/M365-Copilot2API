@@ -271,7 +271,7 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 			AccountID:      sess.AccountID,
 			MatchedBy:      fmt.Sprintf("context_suffix_%d", suffixN),
 			IsNew:          false,
-			HistoryLen:     len(sess.ContextHistory),
+			HistoryLen:     suffixN,
 		}
 	}
 
