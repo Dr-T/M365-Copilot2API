@@ -177,6 +177,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/accounts", s.accounts)
 	m.HandleFunc("/api/accounts/refresh", s.refreshAccount)
 	m.HandleFunc("/api/accounts/delete", s.deleteAccount)
+	m.HandleFunc("/api/accounts/provision", s.provisionAccount)
 	m.HandleFunc("/api/auth/start", s.startPKCE)
 	m.HandleFunc("/api/auth/status", s.pkceStatus)
 	m.HandleFunc("/api/auth/callback", s.callbackPKCE)
@@ -492,6 +493,39 @@ func (s *Server) deleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonOut(w, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) provisionAccount(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.validAdminSession(r) {
+		writeOpenAIError(w, http.StatusUnauthorized, "auth_error", "administrator login required")
+		return
+	}
+	var body struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Email == "" || body.Password == "" {
+		http.Error(w, "email and password required", http.StatusBadRequest)
+		return
+	}
+	set, err := auth.ROPC(body.Email, body.Password)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "ropc_error", err.Error())
+		return
+	}
+	acc, err := s.tokens.Upsert(set)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "upsert_error", err.Error())
+		return
+	}
+	jsonOut(w, map[string]any{"status": "provisioned", "account": map[string]any{
+		"id": acc.ID, "email": acc.Email, "displayName": acc.DisplayName,
+		"status": acc.Status, "expiresAt": acc.ExpiresAt,
+	}})
 }
 
 func (s *Server) startPKCE(w http.ResponseWriter, _ *http.Request) {
