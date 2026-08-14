@@ -261,16 +261,22 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		if strings.HasPrefix(snapshot, cur) {
 			return emitDelta(strings.TrimPrefix(snapshot, cur))
 		}
-		if i := strings.Index(snapshot, cur); i >= 0 {
-			return emitDelta(snapshot[i+len(cur):])
-		}
-		if len(snapshot) > len(cur) && strings.HasSuffix(snapshot, cur) {
-			return emitDelta(snapshot[:len(snapshot)-len(cur)])
-		}
 		if len(snapshot) <= len(cur) {
+			if strings.HasPrefix(cur, snapshot) {
+				return nil
+			}
 			return nil
 		}
-		return emitDelta(snapshot)
+		suffix := longestCommonSuffix(cur, snapshot)
+		if suffix > 0 {
+			return emitDelta(snapshot[suffix:])
+		}
+		prefix := longestCommonPrefix(cur, snapshot)
+		if prefix > 0 {
+			return emitDelta(snapshot[prefix:])
+		}
+		log.Printf("[emitSnapshot] skip: cannot deduplicate cur=%d snapshot=%d", len(cur), len(snapshot))
+		return nil
 	}
 	var final string
 	var throttling any
@@ -412,9 +418,11 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 				if errObj, ok := obj["error"].(map[string]any); ok {
 					return Result{}, fmt.Errorf("chathub completion error: %v", errObj)
 				}
-				// end of stream
 				log.Printf("chathub timing completion_frame_ms=%d streamed_text=%d events=%d", time.Since(payloadSentAt).Milliseconds(), streamed.Len(), len(events))
-				text := final
+				text := streamed.String()
+				if text == "" {
+					text = final
+				}
 				if text == "" {
 					text = strings.Join(deltas, "")
 				}
@@ -726,4 +734,28 @@ func chatPayload(text, sessionID, conversationID, requestID, tone string, firstT
 	b1, _ := json.Marshal(chat)
 	b2, _ := json.Marshal(metrics)
 	return string(b1) + rs + string(b2) + rs
+}
+
+func longestCommonPrefix(a, b string) int {
+	minLen := len(a)
+	if len(b) < minLen {
+		minLen = len(b)
+	}
+	i := 0
+	for i < minLen && a[i] == b[i] {
+		i++
+	}
+	return i
+}
+
+func longestCommonSuffix(a, b string) int {
+	ai := len(a) - 1
+	bi := len(b) - 1
+	n := 0
+	for ai >= 0 && bi >= 0 && a[ai] == b[bi] {
+		n++
+		ai--
+		bi--
+	}
+	return n
 }

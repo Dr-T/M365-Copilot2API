@@ -126,13 +126,7 @@ python manage.py stop     # 停止服务
 
 ### Docker 部署
 
-仓库自带 `Dockerfile` 与 `docker-compose.yml`：
-
-```bash
-docker compose up -d --build
-```
-
-镜像内以非 root 用户运行，端口映射默认只暴露在 `127.0.0.1`，数据目录挂载在 `./data`，管理员密码可文件注入。
+> 由于个人精力有限且不做容器化维护，官方停止提供 Dockerfile / docker-compose 部署。需要容器部署的用户请自行根据原生环境打包，或在 Discussions 交流社区自建的 Docker 方案。
 
 ### 初始化与第一次调用
 
@@ -301,6 +295,8 @@ curl http://127.0.0.1:4141/v1/messages \
 ```
 
 其他任何支持 OpenAI / Anthropic `base_url` 配置的客户端（OpenCode、Cursor、Codex 等）同理，把 `BASE_URL` 指向网关即可。
+
+> 作者不针对任何第三方 Agent 框架的兼容性提供适配与排查。如有需要，自行适配。
 
 控制台「API Keys」页的「使用 API 密钥」弹窗可直接生成 Claude Code 的 `settings.json` 配置与终端环境变量，复制即可。
 
