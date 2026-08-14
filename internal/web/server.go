@@ -657,8 +657,6 @@ func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {
 			return auth.AccountToken{}, fmt.Errorf("no accounts; login first")
 		}
 		accountID = acc.ID
-		// Round-robin may land on a cooling-down or auth-failed account;
-		// walk the pool for the next healthy one without infinite loops.
 		for i := 0; !s.accountPool.Available(accountID) && i < maxAccountProbe; i++ {
 			acc, ok = s.tokens.Next()
 			if !ok {
@@ -667,7 +665,12 @@ func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {
 			accountID = acc.ID
 		}
 		if !s.accountPool.Available(accountID) {
-			return auth.AccountToken{}, fmt.Errorf("all accounts are cooling down or failing auth; try again later")
+			until := s.accountPool.EarliestRecovery()
+			retry := int(time.Until(until).Seconds())
+			if retry < 5 {
+				retry = 5
+			}
+			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: retry, Body: "all accounts are cooling down; try again later"}
 		}
 	}
 	return s.tokens.EnsureValid(accountID)
@@ -788,11 +791,10 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 	}
 	acc, err := s.resolveAccount(body.AccountID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeUpstreamError(w, err)
 		return
 	}
 	if acc.OID == "" || acc.TID == "" {
-		// try extract from access token claims on the fly
 		if claimsOID, claimsTID := extractOIDTID(acc.AccessToken); claimsOID != "" {
 			acc.OID = claimsOID
 			acc.TID = claimsTID
@@ -903,7 +905,7 @@ func (s *Server) adminModelTest(w http.ResponseWriter, r *http.Request) {
 	}
 	acc, err := s.resolveAccount("")
 	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "account_error", err.Error())
+		writeUpstreamError(w, err)
 		return
 	}
 	if acc.OID == "" || acc.TID == "" {
@@ -1121,7 +1123,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	acc, err := s.resolveAccount(accountID)
 	if err != nil {
 		log.Printf("[account-route] resolve failed requested=%q err=%v", accountID, err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeUpstreamError(w, err)
 		return
 	}
 	log.Printf("[account-route] selected id=%q email=%q token_present=%t oid_present=%t tid_present=%t", acc.ID, acc.Email, acc.AccessToken != "", acc.OID != "", acc.TID != "")

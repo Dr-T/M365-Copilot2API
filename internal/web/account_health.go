@@ -143,3 +143,17 @@ func (h *accountHealth) Snapshot() map[string]map[string]any {
 	}
 	return out
 }
+
+// EarliestRecovery returns the earliest time at which any account may become
+// available again. Used to populate Retry-After when all accounts are cooling.
+func (h *accountHealth) EarliestRecovery() time.Time {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	earliest := time.Now().Add(5 * time.Minute)
+	for _, until := range h.cooldown {
+		if until.Before(earliest) {
+			earliest = until
+		}
+	}
+	return earliest
+}

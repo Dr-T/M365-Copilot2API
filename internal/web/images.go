@@ -2,8 +2,10 @@ package web
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"m365-copilot2api/internal/chathub"
 	"net/http"
@@ -45,7 +47,7 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 	}
 	acc, err := s.resolveAccount(firstNonEmpty(b.AccountID, b.User))
 	if err != nil {
-		http.Error(w, err.Error(), 400)
+		writeUpstreamError(w, err)
 		return
 	}
 	if acc.OID == "" || acc.TID == "" {
@@ -112,11 +114,17 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 	data := make([]map[string]string, 0, len(images))
 	for _, u := range images {
 		if strings.EqualFold(b.ResponseFormat, "b64_json") {
-			if !strings.HasPrefix(u, "data:image/") {
-				http.Error(w, `{"error":{"message":"upstream returned URL, not b64_json","type":"unsupported_response_format"}}`, 502)
-				return
+			if strings.HasPrefix(u, "data:image/") {
+				data = append(data, map[string]string{"b64_json": strings.SplitN(u, ",", 2)[1]})
+			} else {
+				b64, ct, err := downloadImageAsBase64(u)
+				if err != nil {
+					log.Printf("[image-gen] download failed for b64_json: %v", err)
+					data = append(data, map[string]string{"url": u})
+				} else {
+					data = append(data, map[string]string{"b64_json": b64, "content_type": ct})
+				}
 			}
-			data = append(data, map[string]string{"b64_json": strings.SplitN(u, ",", 2)[1]})
 		} else {
 			data = append(data, map[string]string{"url": u})
 		}
@@ -170,4 +178,56 @@ func extractImageURLs(raw string) []string {
 	}
 	walk(v)
 	return out
+}
+
+func downloadImageAsBase64(url string) (b64, contentType string, err error) {
+	return downloadImageAsBase64WithToken(url, "")
+}
+
+func downloadImageAsBase64WithToken(url, token string) (b64, contentType string, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", "", err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return "", "", fmt.Errorf("download returned %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
+	if err != nil {
+		return "", "", err
+	}
+	ct := resp.Header.Get("Content-Type")
+	if ct == "" {
+		ct = http.DetectContentType(body)
+	}
+	enc := base64.StdEncoding.EncodeToString(body)
+	return enc, ct, nil
+}
+
+func downloadImageAsDataURI(url string) (string, error) {
+	b64, ct, err := downloadImageAsBase64(url)
+	if err != nil {
+		return url, nil
+	}
+	return "data:" + ct + ";base64," + b64, nil
+}
+
+func downloadImageAsDataURIWithToken(url, token string) (string, error) {
+	b64, ct, err := downloadImageAsBase64WithToken(url, token)
+	if err != nil {
+		log.Printf("[image-download] failed url=%s token_len=%d err=%v", url[:80], len(token), err)
+		return url, nil
+	}
+	log.Printf("[image-download] ok url=%s ct=%s size=%d", url[:80], ct, len(b64))
+	return "data:" + ct + ";base64," + b64, nil
 }
