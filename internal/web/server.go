@@ -33,7 +33,7 @@ type pendingPKCE struct {
 }
 
 // rateLimitCooldown is how long a rate-limited account stays out of rotation.
-const rateLimitCooldown = 15 * time.Minute
+const rateLimitCooldown = 3 * time.Minute
 
 // maxAccountProbe bounds the round-robin walk when skipping unhealthy accounts.
 const maxAccountProbe = 16
@@ -667,7 +667,7 @@ func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {
 			accountID = acc.ID
 		}
 		if !s.accountPool.Available(accountID) {
-			return auth.AccountToken{}, fmt.Errorf("all accounts are cooling down or failing auth; try again later")
+			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: 60, Body: "all accounts are cooling down; try again later"}
 		}
 	}
 	return s.tokens.EnsureValid(accountID)
@@ -788,11 +788,10 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 	}
 	acc, err := s.resolveAccount(body.AccountID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeUpstreamError(w, err)
 		return
 	}
 	if acc.OID == "" || acc.TID == "" {
-		// try extract from access token claims on the fly
 		if claimsOID, claimsTID := extractOIDTID(acc.AccessToken); claimsOID != "" {
 			acc.OID = claimsOID
 			acc.TID = claimsTID
@@ -903,7 +902,7 @@ func (s *Server) adminModelTest(w http.ResponseWriter, r *http.Request) {
 	}
 	acc, err := s.resolveAccount("")
 	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "account_error", err.Error())
+		writeUpstreamError(w, err)
 		return
 	}
 	if acc.OID == "" || acc.TID == "" {
@@ -1121,7 +1120,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	acc, err := s.resolveAccount(accountID)
 	if err != nil {
 		log.Printf("[account-route] resolve failed requested=%q err=%v", accountID, err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeUpstreamError(w, err)
 		return
 	}
 	log.Printf("[account-route] selected id=%q email=%q token_present=%t oid_present=%t tid_present=%t", acc.ID, acc.Email, acc.AccessToken != "", acc.OID != "", acc.TID != "")

@@ -45,7 +45,7 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 	}
 	acc, err := s.resolveAccount(firstNonEmpty(b.AccountID, b.User))
 	if err != nil {
-		http.Error(w, err.Error(), 400)
+		writeUpstreamError(w, err)
 		return
 	}
 	if acc.OID == "" || acc.TID == "" {

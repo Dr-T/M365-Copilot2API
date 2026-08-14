@@ -36,7 +36,7 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 	}
 	acc, err := s.resolveAccount(body.AccountID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeUpstreamError(w, err)
 		return
 	}
 	if acc.OID == "" || acc.TID == "" {
