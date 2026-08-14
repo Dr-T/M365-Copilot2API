@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -189,9 +190,21 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	}
 
 	dialStarted := time.Now()
-	conn, _, err := c.Dialer.DialContext(ctx, wsURL, c.HTTPHeader.Clone())
+	conn, resp, err := c.Dialer.DialContext(ctx, wsURL, c.HTTPHeader.Clone())
 	log.Printf("chathub timing ws_dial_ms=%d total_ms=%d", time.Since(dialStarted).Milliseconds(), time.Since(startedAt).Milliseconds())
 	if err != nil {
+		if resp != nil && resp.StatusCode == 429 {
+			retryAfter := 0
+			if v, _ := strconv.Atoi(resp.Header.Get("Retry-After")); v > 0 {
+				retryAfter = v
+			}
+			log.Printf("chathub ws_dial 429 Retry-After=%d", retryAfter)
+			return Result{}, fmt.Errorf("ws dial: upstream 429 rate limited (Retry-After=%d)", retryAfter)
+		}
+		if resp != nil && (resp.StatusCode == 401 || resp.StatusCode == 403) {
+			log.Printf("chathub ws_dial %d", resp.StatusCode)
+			return Result{}, fmt.Errorf("ws dial: upstream %d auth failure", resp.StatusCode)
+		}
 		return Result{}, fmt.Errorf("ws dial: %w", err)
 	}
 	defer conn.Close()
