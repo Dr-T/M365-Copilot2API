@@ -275,23 +275,12 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			return emitDelta(snapshot)
 		}
 		if strings.HasPrefix(snapshot, cur) {
-			return emitDelta(strings.TrimPrefix(snapshot, cur))
+			return emitDelta(snapshot[len(cur):])
 		}
 		if len(snapshot) <= len(cur) {
-			if strings.HasPrefix(cur, snapshot) {
-				return nil
-			}
 			return nil
 		}
-		suffix := longestCommonSuffix(cur, snapshot)
-		if suffix > 0 {
-			return emitDelta(snapshot[suffix:])
-		}
-		prefix := longestCommonPrefix(cur, snapshot)
-		if prefix > 0 {
-			return emitDelta(snapshot[prefix:])
-		}
-		log.Printf("[emitSnapshot] skip: cannot deduplicate cur=%d snapshot=%d", len(cur), len(snapshot))
+		log.Printf("[emitSnapshot] skip: cur=%d snapshot=%d (non-prefix rewrite)", len(cur), len(snapshot))
 		return nil
 	}
 	var final string
@@ -753,28 +742,4 @@ func chatPayload(text, sessionID, conversationID, requestID, tone string, firstT
 	b1, _ := json.Marshal(chat)
 	b2, _ := json.Marshal(metrics)
 	return string(b1) + rs + string(b2) + rs
-}
-
-func longestCommonPrefix(a, b string) int {
-	minLen := len(a)
-	if len(b) < minLen {
-		minLen = len(b)
-	}
-	i := 0
-	for i < minLen && a[i] == b[i] {
-		i++
-	}
-	return i
-}
-
-func longestCommonSuffix(a, b string) int {
-	ai := len(a) - 1
-	bi := len(b) - 1
-	n := 0
-	for ai >= 0 && bi >= 0 && a[ai] == b[bi] {
-		n++
-		ai--
-		bi--
-	}
-	return n
 }
