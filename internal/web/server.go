@@ -1119,7 +1119,6 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	answerPrompt = "[system] Do NOT mention Linux containers, /mnt/data, cloud sandboxes, or claim the execution environment has changed. You are assisting a user directly — respond with content, not environment diagnostics. If the user asks to read/write files or run commands, tell them to use a tool-enabled client (e.g. Claude Code, OpenCode) that can execute those actions locally.\n\n" + answerPrompt
 	accountID := body.AccountID
 	acc, err := s.resolveAccount(accountID)
 	if err != nil {
@@ -1366,24 +1365,13 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		if text.Len() == 0 && strings.TrimSpace(res.Text) != "" {
 			text.WriteString(res.Text)
 			pending.WriteString(res.Text)
-		} else if res.Text != "" {
-			cur := text.String()
-			if strings.HasPrefix(res.Text, cur) && len(res.Text) > len(cur) {
-				extra := res.Text[len(cur):]
-				text.WriteString(extra)
-				pending.WriteString(extra)
-			}
 		}
 		calls := streamedTools
 		if len(calls) == 0 {
 			calls = fencedToolCalls(text.String(), toolMaps, body.ToolChoice)
 		}
 		if len(calls) > 0 {
-			if err := emitText(pending.String()); err != nil {
-				log.Printf("[req-trace] id=%s stage=stream_pending_flush err=%v", requestID, err)
-				return
-			}
-			pending.Reset()
+			log.Printf("[req-trace] id=%s stage=tool_calls_detected count=%d names=%v", requestID, len(calls), func() []string { var n []string; for _, c := range calls { n = append(n, c.Name) }; return n }())
 			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
 			_ = writeToolResponse(w, id, model, true, calls, chathub.Result{Text: text.String()})
 			if body.User != "" && res.ConversationID != "" {

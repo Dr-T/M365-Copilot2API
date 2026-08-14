@@ -11,6 +11,7 @@ import (
 	"m365-copilot2api/internal/outbound"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -22,6 +23,15 @@ import (
 // ChatHub sometimes sends through the text channel instead of HTTP 429.
 // Callers must independently probe the account before marking it unhealthy.
 var ErrRateLimitNotice = errors.New("upstream rate-limit notice")
+
+var chTrace = os.Getenv("M365_TRACE") == "1"
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
 
 func minInt(a, b int) int {
 	if a < b {
@@ -217,6 +227,9 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		if d == "" {
 			return nil
 		}
+		if chTrace {
+			log.Printf("[trace:emitDelta] len=%d streamed=%d preview=%q", len(d), streamed.Len()+len(d), truncate(d, 80))
+		}
 		if streamed.Len() == 0 {
 			log.Printf("chathub timing first_delta_ms=%d len=%d", time.Since(payloadSentAt).Milliseconds(), len(d))
 		}
@@ -250,6 +263,9 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	emitSnapshot := func(snapshot string) error {
 		if snapshot == "" {
 			return nil
+		}
+		if chTrace {
+			log.Printf("[trace:emitSnapshot] cur=%d snapshot=%d", streamed.Len(), len(snapshot))
 		}
 		if rateLimited(snapshot) {
 			return ErrRateLimitNotice
@@ -313,6 +329,9 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			part = strings.TrimSpace(part)
 			if part == "" {
 				continue
+			}
+			if chTrace {
+				log.Printf("[trace:ws] frame_len=%d preview=%q", len(part), truncate(part, 120))
 			}
 			events = append(events, json.RawMessage(append([]byte(nil), part...)))
 			var obj map[string]any
