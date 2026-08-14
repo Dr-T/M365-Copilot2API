@@ -1119,6 +1119,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	answerPrompt = "[system] Do NOT mention Linux containers, /mnt/data, cloud sandboxes, or claim the execution environment has changed. You are assisting a user directly — respond with content, not environment diagnostics. If the user asks to read/write files or run commands, tell them to use a tool-enabled client (e.g. Claude Code, OpenCode) that can execute those actions locally.\n\n" + answerPrompt
 	accountID := body.AccountID
 	acc, err := s.resolveAccount(accountID)
 	if err != nil {
