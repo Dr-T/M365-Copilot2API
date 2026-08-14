@@ -1,10 +1,22 @@
 package web
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+
+	"m365-copilot2api/internal/auth"
 )
+
+func logOAuthError(stage string, err error) {
+	var oauthErr *auth.OAuthError
+	if errors.As(err, &oauthErr) {
+		log.Printf("oauth_error stage=%s error=%q aadsts=%q http_status=%d correlation_id=%q trace_id=%q", stage, oauthErr.Code, oauthErr.AADSTS, oauthErr.HTTPStatus, oauthErr.CorrelationID, oauthErr.TraceID)
+		return
+	}
+	log.Printf("oauth_error stage=%s error=%q", stage, "request_failed")
+}
 
 // upstreamError keeps transport details, including URLs and credentials, out
 // of client-visible responses while retaining a server-side diagnostic.

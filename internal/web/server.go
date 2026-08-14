@@ -25,11 +25,12 @@ import (
 )
 
 type pendingPKCE struct {
-	Verifier string
-	Created  time.Time
-	Status   string
-	Account  any
-	Error    string
+	Verifier    string
+	Created     time.Time
+	Status      string
+	Account     any
+	Error       string
+	RedirectURI string
 }
 
 // rateLimitCooldown is how long a rate-limited account stays out of rotation.
@@ -561,7 +562,7 @@ func (s *Server) startPKCE(w http.ResponseWriter, _ *http.Request) {
 	state := hex.EncodeToString(b)
 	redirectURI := auth.RedirectURI()
 	s.mu.Lock()
-	s.pkce[state] = pendingPKCE{Verifier: v, Created: time.Now(), Status: "pending"}
+	s.pkce[state] = pendingPKCE{Verifier: v, Created: time.Now(), Status: "pending", RedirectURI: redirectURI}
 	s.mu.Unlock()
 	jsonOut(w, map[string]string{
 		"status": "pkce_ready",
@@ -609,30 +610,58 @@ func (s *Server) pkceStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) callbackPKCE(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
+	oauthError := r.URL.Query().Get("error")
 	// also accept pasted full callback URL
-	if code == "" {
+	if code == "" && oauthError == "" {
 		if u := r.URL.Query().Get("url"); u != "" {
 			if parsed, err := http.NewRequest(http.MethodGet, u, nil); err == nil {
 				code = parsed.URL.Query().Get("code")
+				oauthError = parsed.URL.Query().Get("error")
 				if state == "" {
 					state = parsed.URL.Query().Get("state")
 				}
 			}
 		}
 	}
-	if state == "" || code == "" {
-		http.Error(w, "missing state or code", http.StatusBadRequest)
+	if state == "" || (code == "" && oauthError == "") {
+		http.Error(w, "missing state or authorization result", http.StatusBadRequest)
 		return
 	}
 	s.mu.Lock()
 	p, ok := s.pkce[state]
-	s.mu.Unlock()
 	if !ok || time.Since(p.Created) > 10*time.Minute {
+		if ok {
+			delete(s.pkce, state)
+		}
+		s.mu.Unlock()
 		http.Error(w, "invalid or expired state", http.StatusBadRequest)
 		return
 	}
-	tok, err := auth.ExchangeCode(code, p.Verifier, auth.RedirectURI())
+	if p.Status != "pending" {
+		s.mu.Unlock()
+		http.Error(w, "authorization result already consumed", http.StatusConflict)
+		return
+	}
+	p.Status = "processing"
+	s.pkce[state] = p
+	s.mu.Unlock()
+	if oauthError != "" {
+		log.Printf("oauth_error stage=callback error=%q", oauthError)
+		s.mu.Lock()
+		p.Status = "error"
+		p.Error = oauthError
+		s.pkce[state] = p
+		s.mu.Unlock()
+		http.Error(w, "Microsoft authorization failed: "+oauthError, http.StatusBadRequest)
+		return
+	}
+	redirectURI := p.RedirectURI
+	if redirectURI == "" {
+		redirectURI = auth.RedirectURI()
+	}
+	tok, err := auth.ExchangeCode(code, p.Verifier, redirectURI)
 	if err != nil {
+		logOAuthError("code_exchange", err)
 		s.mu.Lock()
 		p.Status = "error"
 		p.Error = err.Error()
@@ -658,7 +687,7 @@ func (s *Server) callbackPKCE(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	// Browser loopback callbacks should finish in a friendly page instead of
 	// displaying a raw JSON response. Keep JSON for the manual/API flow.
-	if strings.HasPrefix(auth.RedirectURI(), "http://127.0.0.1:") || strings.HasPrefix(auth.RedirectURI(), "http://localhost:") {
+	if strings.HasPrefix(redirectURI, "http://127.0.0.1:") || strings.HasPrefix(redirectURI, "http://localhost:") {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, `<!doctype html><meta charset="utf-8"><title>M365 Copilot2API 授权完成</title><style>body{font:16px system-ui;text-align:center;padding:15vh 20px;color:#242424}main{max-width:520px;margin:auto}h1{font-size:26px}</style><main><h1>授权完成</h1><p>账号已经自动加入账号池，可以关闭此页面。</p><script>if(window.opener){window.opener.postMessage({type:"m365-auth-complete"},window.location.origin);setTimeout(()=>window.close(),300)}</script></main>`)
 		return
