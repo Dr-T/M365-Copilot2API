@@ -964,17 +964,17 @@ type oaiReq struct {
 	Messages       []oaiMsg        `json:"messages"`
 	Stream         bool            `json:"stream"`
 	// optional account routing
-	User           string               `json:"user"`
-	AccountID      string               `json:"accountId"`
-	ConversationID string               `json:"conversation_id"`
-	SessionID      string               `json:"session_id"`
-	SessionKey     string               `json:"session_key"`
+	User           string `json:"user"`
+	AccountID      string `json:"accountId"`
+	ConversationID string `json:"conversation_id"`
+	SessionID      string `json:"session_id"`
+	SessionKey     string `json:"session_key"`
 	// CamelCase aliases mirroring the response metadata fields; clients echo
 	// m365.conversationId / m365.sessionId back verbatim.
-	ConversationIDC string `json:"conversationId,omitempty"`
-	SessionIDC      string `json:"sessionId,omitempty"`
-	Attachments    []chathub.Attachment `json:"attachments,omitempty"`
-	Tools          []chathub.Tool       `json:"tools,omitempty"`
+	ConversationIDC string               `json:"conversationId,omitempty"`
+	SessionIDC      string               `json:"sessionId,omitempty"`
+	Attachments     []chathub.Attachment `json:"attachments,omitempty"`
+	Tools           []chathub.Tool       `json:"tools,omitempty"`
 	// Legacy OpenAI-compatible clients still send functions/function_call.
 	Functions       []json.RawMessage `json:"functions,omitempty"`
 	ToolChoice      any               `json:"tool_choice,omitempty"`
@@ -1802,19 +1802,17 @@ func (s *Server) writePublicIdentityChatResponse(w http.ResponseWriter, r *http.
 	model := firstNonEmpty(body.Model, defaultPublicModelName)
 	id := "chatcmpl-" + uuid.NewString()
 	created := time.Now().Unix()
-	usage := reuseUsage{
-		PromptTokens:     EstimateTokens(prompt),
-		CompletionTokens: EstimateTokens(answer),
-	}
+	inputTokens := EstimateTokens(prompt)
+	outputTokens := EstimateTokens(answer)
+	usage := map[string]any{"prompt_tokens": inputTokens, "completion_tokens": outputTokens, "total_tokens": inputTokens + outputTokens}
 	if s.usage != nil {
 		s.usage.record(UsageRecord{
 			Time:         time.Now(),
 			APIKeyPrefix: extractAPIKey(r),
 			Model:        model,
 			Endpoint:     "/v1/chat/completions",
-			InputTokens:  usage.PromptTokens,
-			OutputTokens: usage.CompletionTokens,
-			CacheSource:  "none",
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
 			DurationMs:   time.Since(startedAt).Milliseconds(),
 			Status:       http.StatusOK,
 		})
@@ -1830,7 +1828,7 @@ func (s *Server) writePublicIdentityChatResponse(w http.ResponseWriter, r *http.
 				"message":       map[string]any{"role": "assistant", "content": answer},
 				"finish_reason": "stop",
 			}},
-			"usage": chatUsage(usage),
+			"usage": usage,
 		})
 		return
 	}
@@ -1855,9 +1853,12 @@ func (s *Server) writePublicIdentityChatResponse(w http.ResponseWriter, r *http.
 		}},
 	}
 	_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(chunk)+"\n\n")
-	writeStreamFinish(r.Context(), w, flusher, id, model, chatUsage(usage))
+	finish := map[string]any{"id": id, "object": "chat.completion.chunk", "created": created, "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}, "usage": usage}
+	_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(finish)+"\n\n")
 	_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 }
+
+const defaultPublicModelName = "m365-copilot"
 
 const sessionHeaderName = "X-M365-Session-Id"
 

@@ -33,8 +33,8 @@ func writeToolResponse(w http.ResponseWriter, id, model string, stream bool, cal
 			return map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": finish}}}
 		}
 		firstDelta := map[string]any{"role": "assistant", "content": nil}
-		if res.Reasoning != "" {
-			firstDelta["reasoning_content"] = res.Reasoning
+		if reasoning := sanitizePublicReasoningText(res.Reasoning); reasoning != "" {
+			firstDelta["reasoning_content"] = reasoning
 		}
 		emit(base(firstDelta, nil))
 		for i, tc := range calls {

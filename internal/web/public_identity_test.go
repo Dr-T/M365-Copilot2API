@@ -4,10 +4,23 @@ import (
 	"encoding/json"
 	"m365-copilot2api/internal/chathub"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestMain(m *testing.M) {
+	_ = os.Setenv("M365_PUBLIC_IDENTITY_POLICY", "true")
+	os.Exit(m.Run())
+}
+
+func TestPublicIdentityPolicyDefaultsOff(t *testing.T) {
+	t.Setenv("M365_PUBLIC_IDENTITY_POLICY", "")
+	if publicIdentityPolicyEnabled() {
+		t.Fatal("identity policy should be opt-in when unset")
+	}
+}
 
 func TestApplyPublicIdentityPolicyPreservesPromptAndIsIdempotent(t *testing.T) {
 	prompt := "[user]\nWhat model are you?"
