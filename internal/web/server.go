@@ -33,7 +33,7 @@ type pendingPKCE struct {
 }
 
 // rateLimitCooldown is how long a rate-limited account stays out of rotation.
-const rateLimitCooldown = 15 * time.Minute
+const rateLimitCooldown = 3 * time.Minute
 
 // maxAccountProbe bounds the round-robin walk when skipping unhealthy accounts.
 const maxAccountProbe = 16

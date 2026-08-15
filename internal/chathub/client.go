@@ -25,6 +25,17 @@ import (
 // Callers must independently probe the account before marking it unhealthy.
 var ErrRateLimitNotice = errors.New("upstream rate-limit notice")
 
+// DialError carries the HTTP status and optional Retry-After from a failed
+// WebSocket dial so the web layer can route it into the correct cooldown.
+type DialError struct {
+	Status     int
+	RetryAfter int
+}
+
+func (e *DialError) Error() string {
+	return fmt.Sprintf("ws dial: upstream %d", e.Status)
+}
+
 var chTrace = os.Getenv("M365_TRACE") == "1"
 
 func truncate(s string, n int) string {
@@ -193,17 +204,13 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	conn, resp, err := c.Dialer.DialContext(ctx, wsURL, c.HTTPHeader.Clone())
 	log.Printf("chathub timing ws_dial_ms=%d total_ms=%d", time.Since(dialStarted).Milliseconds(), time.Since(startedAt).Milliseconds())
 	if err != nil {
-		if resp != nil && resp.StatusCode == 429 {
+		if resp != nil && (resp.StatusCode == 429 || resp.StatusCode == 401 || resp.StatusCode == 403) {
 			retryAfter := 0
 			if v, _ := strconv.Atoi(resp.Header.Get("Retry-After")); v > 0 {
 				retryAfter = v
 			}
-			log.Printf("chathub ws_dial 429 Retry-After=%d", retryAfter)
-			return Result{}, fmt.Errorf("ws dial: upstream 429 rate limited (Retry-After=%d)", retryAfter)
-		}
-		if resp != nil && (resp.StatusCode == 401 || resp.StatusCode == 403) {
-			log.Printf("chathub ws_dial %d", resp.StatusCode)
-			return Result{}, fmt.Errorf("ws dial: upstream %d auth failure", resp.StatusCode)
+			log.Printf("chathub ws_dial %d Retry-After=%d", resp.StatusCode, retryAfter)
+			return Result{}, &DialError{Status: resp.StatusCode, RetryAfter: retryAfter}
 		}
 		return Result{}, fmt.Errorf("ws dial: %w", err)
 	}
