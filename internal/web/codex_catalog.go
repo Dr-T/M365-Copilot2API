@@ -68,6 +68,7 @@ var gatewayModels = []modelSpec{
 	{ID: "gpt-5.5", Owner: "microsoft-365", Tools: true},
 	{ID: "gpt-5.5-reasoning", Owner: "microsoft-365", Tools: true},
 	{ID: "gpt-5.6-reasoning", Owner: "microsoft-365", Tools: true},
+	{ID: "gpt-image-2", Owner: "microsoft-365", DisplayName: "GPT Image 2"},
 	{ID: "claude-sonnet", Owner: "anthropic-via-microsoft-365", Tools: true},
 	{ID: "claude-sonnet-reasoning", Owner: "anthropic-via-microsoft-365", Tools: true},
 	{ID: "claude-opus-4-8", Owner: "anthropic-via-microsoft-365", Tools: true},

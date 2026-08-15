@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -124,6 +125,23 @@ func (s *Store) List() []AccountToken {
 	out := make([]AccountToken, len(s.data.Accounts))
 	copy(out, s.data.Accounts)
 	return out
+}
+
+func (s *Store) UpdateRefreshToken(id, refreshToken string) error {
+	refreshToken = strings.TrimSpace(refreshToken)
+	if refreshToken == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.data.Accounts {
+		if s.data.Accounts[i].ID == id {
+			s.data.Accounts[i].RefreshToken = refreshToken
+			s.data.Accounts[i].UpdatedAt = time.Now()
+			return s.saveLocked()
+		}
+	}
+	return errors.New("account not found")
 }
 
 func (s *Store) Upsert(tok TokenSet) (AccountToken, error) {
