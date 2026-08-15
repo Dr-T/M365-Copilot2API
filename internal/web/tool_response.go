@@ -10,7 +10,9 @@ func writeToolResponse(w http.ResponseWriter, id, model string, stream bool, cal
 	toolCalls := toolCallMaps(calls)
 	msg := map[string]any{"role": "assistant", "content": nil, "tool_calls": toolCalls}
 	if res.Reasoning != "" {
-		msg["reasoning_content"] = res.Reasoning
+		if reasoning := sanitizePublicReasoningText(res.Reasoning); reasoning != "" {
+			msg["reasoning_content"] = reasoning
+		}
 	}
 	pt := EstimateTokens(res.Text)
 	for _, tc := range calls {
@@ -31,8 +33,8 @@ func writeToolResponse(w http.ResponseWriter, id, model string, stream bool, cal
 			return map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": finish}}}
 		}
 		firstDelta := map[string]any{"role": "assistant", "content": nil}
-		if res.Reasoning != "" {
-			firstDelta["reasoning_content"] = res.Reasoning
+		if reasoning := sanitizePublicReasoningText(res.Reasoning); reasoning != "" {
+			firstDelta["reasoning_content"] = reasoning
 		}
 		emit(base(firstDelta, nil))
 		for i, tc := range calls {

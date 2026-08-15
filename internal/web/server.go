@@ -889,6 +889,8 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.accountPool.MarkSuccess(acc.ID)
+	res.Text = sanitizePublicAssistantText(res.Text)
+	res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
 	if body.SessionKey != "" {
 		s.sessions.upsert(conversation{ID: body.SessionKey, AccountID: acc.ID, ConversationID: res.ConversationID, SessionID: res.SessionID, Title: text})
 	}
@@ -978,7 +980,7 @@ func (s *Server) adminModelTest(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadGateway, "m365_error", upstreamError(err))
 		return
 	}
-	jsonOut(w, map[string]any{"ok": true, "model": b.Model, "reply": res.Text, "latency_ms": ms})
+	jsonOut(w, map[string]any{"ok": true, "model": b.Model, "reply": sanitizePublicAssistantTextForModel(res.Text, b.Model), "latency_ms": ms})
 }
 
 func (s *Server) openaiModels(w http.ResponseWriter, r *http.Request) {
@@ -1145,6 +1147,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "messages required", http.StatusBadRequest)
 		return
 	}
+	if answer, ok := publicIdentityAnswer(body.Messages, body.Model); ok && responseFormat == nil {
+		s.writePublicIdentityChatResponse(w, r, &body, prompt, answer, startedAt)
+		return
+	}
 
 	if body.SessionKey != "" {
 		if v, ok := s.sessions.get(body.SessionKey); ok {
@@ -1295,7 +1301,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		var pending strings.Builder
 		var streamedTools []detectedToolCall
 		first := true
+		identityFilter := newPublicIdentityStreamFilter(model)
 		emitText := func(part string) error {
+			if part == "" {
+				return nil
+			}
+			part = identityFilter.Push(part)
 			if part == "" {
 				return nil
 			}
@@ -1430,6 +1441,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if IsRateLimited(err) {
 				msg = "upstream is rate limiting; try again shortly"
 			}
+			msg = sanitizePublicInternalText(msg)
 			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": "rate_limit"}})+"\n\n")
 			_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 			return
@@ -1608,14 +1620,16 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			flusher.Flush()
 			return nil
 		}
+		contentFilter := newPublicIdentityStreamFilter(firstNonEmpty(body.Model, defaultPublicModelName))
+		reasoningFilter := newPublicReasoningStreamFilter()
 		onDelta := func(content string) error {
-			if content != "" {
+			if content = contentFilter.Push(content); content != "" {
 				return writeChunk(map[string]any{"content": content})
 			}
 			return nil
 		}
 		onReasoning := func(reasoning string) error {
-			if reasoning != "" {
+			if reasoning = reasoningFilter.Push(reasoning); reasoning != "" {
 				return writeChunk(map[string]any{"reasoning_content": reasoning})
 			}
 			return nil
@@ -1648,6 +1662,18 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			}
 		}
 		if err == nil {
+			if content := contentFilter.Flush(); content != "" {
+				if writeErr := writeChunk(map[string]any{"content": content}); writeErr != nil {
+					return
+				}
+			}
+			if reasoning := reasoningFilter.Flush(); reasoning != "" {
+				if writeErr := writeChunk(map[string]any{"reasoning_content": reasoning}); writeErr != nil {
+					return
+				}
+			}
+			res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
+			res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
 			s.accountPool.MarkSuccess(acc.ID)
 		} else {
 			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
@@ -1656,6 +1682,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			if IsRateLimited(err) {
 				msg = "upstream is rate limiting; try again shortly"
 			}
+			msg = sanitizePublicInternalText(msg)
 			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": "rate_limit"}})+"\n\n")
 		}
 		pt := EstimateTokens(prompt)
@@ -1804,6 +1831,8 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	if !completionEvidenceAllows(res.Text, ledger) {
 		res.Text = "I cannot confirm completion because no matching tool results were returned. No external action has been verified."
 	}
+	res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
+	res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
 	log.Printf("[debug] res.Text bytes=%d content=%q", len(res.Text), res.Text)
 	created := time.Now().Unix()
 
@@ -1878,6 +1907,68 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		},
 	})
 }
+
+func (s *Server) writePublicIdentityChatResponse(w http.ResponseWriter, r *http.Request, body *oaiReq, prompt, answer string, startedAt time.Time) {
+	model := firstNonEmpty(body.Model, defaultPublicModelName)
+	id := "chatcmpl-" + uuid.NewString()
+	created := time.Now().Unix()
+	inputTokens := EstimateTokens(prompt)
+	outputTokens := EstimateTokens(answer)
+	usage := map[string]any{"prompt_tokens": inputTokens, "completion_tokens": outputTokens, "total_tokens": inputTokens + outputTokens}
+	if s.usage != nil {
+		s.usage.record(UsageRecord{
+			Time:         time.Now(),
+			APIKeyPrefix: extractAPIKey(r),
+			Model:        model,
+			Endpoint:     "/v1/chat/completions",
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+			DurationMs:   time.Since(startedAt).Milliseconds(),
+			Status:       http.StatusOK,
+		})
+	}
+	if !body.Stream {
+		jsonOut(w, map[string]any{
+			"id":      id,
+			"object":  "chat.completion",
+			"created": created,
+			"model":   model,
+			"choices": []map[string]any{{
+				"index":         0,
+				"message":       map[string]any{"role": "assistant", "content": answer},
+				"finish_reason": "stop",
+			}},
+			"usage": usage,
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "stream unsupported", http.StatusInternalServerError)
+		return
+	}
+	chunk := map[string]any{
+		"id":      id,
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   model,
+		"choices": []map[string]any{{
+			"index":         0,
+			"delta":         map[string]any{"role": "assistant", "content": answer},
+			"finish_reason": nil,
+		}},
+	}
+	_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(chunk)+"\n\n")
+	finish := map[string]any{"id": id, "object": "chat.completion.chunk", "created": created, "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}, "usage": usage}
+	_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(finish)+"\n\n")
+	_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+}
+
+const defaultPublicModelName = "m365-copilot"
 
 const sessionHeaderName = "X-M365-Session-Id"
 
