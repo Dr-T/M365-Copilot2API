@@ -65,6 +65,10 @@ func IsAuthFailure(err error) bool {
 	return false
 }
 
+func IsEmptyCompletion(err error) bool {
+	return errors.Is(err, chathub.ErrEmptyCompletion)
+}
+
 // RetryAfterSeconds returns the upstream Retry-After hint for a rate-limited
 // error, or 0 when absent. The web layer surfaces this to clients so they can
 // back off instead of hammering a throttled pool.

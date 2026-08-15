@@ -25,6 +25,8 @@ import (
 // Callers must independently probe the account before marking it unhealthy.
 var ErrRateLimitNotice = errors.New("upstream rate-limit notice")
 
+var ErrEmptyCompletion = errors.New("upstream returned empty completion; tone may be unavailable for this tenant")
+
 // DialError carries the HTTP status and optional Retry-After from a failed
 // WebSocket dial so the web layer can route it into the correct cooldown.
 type DialError struct {
@@ -456,6 +458,9 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 				}
 				if rateLimited(text) {
 					return Result{}, ErrRateLimitNotice
+				}
+				if text == "" {
+					return Result{}, ErrEmptyCompletion
 				}
 				return Result{
 					Text:           text,
