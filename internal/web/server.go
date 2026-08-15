@@ -959,17 +959,17 @@ type oaiReq struct {
 	Messages       []oaiMsg        `json:"messages"`
 	Stream         bool            `json:"stream"`
 	// optional account routing
-	User           string               `json:"user"`
-	AccountID      string               `json:"accountId"`
-	ConversationID string               `json:"conversation_id"`
-	SessionID      string               `json:"session_id"`
-	SessionKey     string               `json:"session_key"`
+	User           string `json:"user"`
+	AccountID      string `json:"accountId"`
+	ConversationID string `json:"conversation_id"`
+	SessionID      string `json:"session_id"`
+	SessionKey     string `json:"session_key"`
 	// CamelCase aliases mirroring the response metadata fields; clients echo
 	// m365.conversationId / m365.sessionId back verbatim.
-	ConversationIDC string `json:"conversationId,omitempty"`
-	SessionIDC      string `json:"sessionId,omitempty"`
-	Attachments    []chathub.Attachment `json:"attachments,omitempty"`
-	Tools          []chathub.Tool       `json:"tools,omitempty"`
+	ConversationIDC string               `json:"conversationId,omitempty"`
+	SessionIDC      string               `json:"sessionId,omitempty"`
+	Attachments     []chathub.Attachment `json:"attachments,omitempty"`
+	Tools           []chathub.Tool       `json:"tools,omitempty"`
 	// Legacy OpenAI-compatible clients still send functions/function_call.
 	Functions       []json.RawMessage `json:"functions,omitempty"`
 	ToolChoice      any               `json:"tool_choice,omitempty"`
@@ -1011,6 +1011,21 @@ func normalizeLegacyTools(body *oaiReq) {
 	if body.ToolChoice == nil && body.FunctionCall != nil {
 		body.ToolChoice = body.FunctionCall
 	}
+}
+
+func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedger, planningMode string) chathub.Request {
+	if len(ledger.Completed) > 0 || len(ledger.Pending) > 0 {
+		answerPrompt += "\n" + ledger.RouterContext()
+	}
+	if len(ledger.Completed) > 0 {
+		answerPrompt += "\nFINAL ANSWER RULE: Report only actions supported by completed tool results. If the goal is not fully verified, state exactly what remains unconfirmed."
+	}
+	req := chathub.Request{Text: answerPrompt, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments}
+	if planningMode == "native" {
+		req.Tools = body.Tools
+		req.ToolChoice = body.ToolChoice
+	}
+	return req
 }
 
 func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
@@ -1145,6 +1160,13 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	if body.ToolChoice == nil && len(toolMaps) > 0 {
 		body.ToolChoice = "auto"
 	}
+	validateCalls := func(stage string, calls []detectedToolCall) ([]detectedToolCall, int) {
+		valid, rejected := validateDetectedToolCalls(calls, toolMaps, body.ToolChoice)
+		for _, call := range rejected {
+			log.Printf("[tool-validation] id=%s stage=%s rejected_name=%q reason=%q", requestID, stage, call.Name, call.Reason)
+		}
+		return valid, len(rejected)
+	}
 	planningMode := s.settings.get().ToolPlanningMode
 
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
@@ -1178,6 +1200,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 		calls, parsed := parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
 		calls = filterCompletedCalls(calls, ledger)
+		calls, _ = validateCalls("router", calls)
 		if !parsed {
 			repairRes, repairErr := s.chat.Chat(ctx, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Use {"calls":[]} if no tool is needed. OUTPUT:\n` + compactToolResult(routeRes.Text, 6000), Tone: tone, Attachments: body.Attachments})
 			if repairErr == nil && repairRes.ConversationID != "" {
@@ -1186,6 +1209,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if repairErr == nil {
 				calls, parsed = parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
 				calls = filterCompletedCalls(calls, ledger)
+				calls, _ = validateCalls("router", calls)
 			}
 		}
 		if parsed && len(calls) > 0 {
@@ -1199,9 +1223,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if body.Stream {
-		answerPrompt = answerPrompt + "\n" + ledger.RouterContext() + "\nFINAL ANSWER RULE: Answer the user directly. If a tool is explicitly required, emit its structured call; otherwise return ordinary text."
-		log.Printf("[req-trace] id=%s stage=answer_start prompt_len=%d", requestID, len(answerPrompt))
-		answerReq := chathub.Request{Text: answerPrompt, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, Tools: body.Tools, ToolChoice: body.ToolChoice}
+		answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode)
+		answerPrompt = answerReq.Text
+		log.Printf("[req-trace] id=%s stage=answer_start prompt_len=%d native_tools=%d", requestID, len(answerPrompt), len(answerReq.Tools))
 		id := "chatcmpl-" + uuid.NewString()
 		model := firstNonEmpty(body.Model, "m365-copilot")
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -1366,13 +1390,38 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			text.WriteString(res.Text)
 			pending.WriteString(res.Text)
 		}
-		calls := streamedTools
-		if len(calls) == 0 {
-			calls = fencedToolCalls(text.String(), toolMaps, body.ToolChoice)
+		rawCalls := streamedTools
+		if len(rawCalls) == 0 {
+			rawCalls = fencedToolCalls(text.String(), toolMaps, body.ToolChoice)
+		}
+		calls, rejected := validateCalls("stream", rawCalls)
+		toolResult := chathub.Result{Text: text.String()}
+		if len(calls) == 0 && rejected > 0 {
+			// A native ChatHub event can contain a fabricated or empty tool name.
+			// Do not leak it to the local runner: ask the model to remap the intent
+			// to exactly one of the tools the client actually declared.
+			repairPrompt := modelToolRouterPrompt(prompt+"\n"+ledger.RouterContext(), toolMaps, "required") +
+				"\nREPAIR RULE: The previous upstream event selected an undeclared tool. Select one declared tool that performs the intended operation. Never return unknown_tool."
+			repairRes, repairErr := s.chat.Chat(ctx, account, chathub.Request{Text: repairPrompt, Tone: tone, Attachments: body.Attachments})
+			if repairErr == nil {
+				repaired, parsed := parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
+				if parsed {
+					calls, _ = validateCalls("stream-repair", repaired)
+					if len(calls) > 0 {
+						toolResult = repairRes
+					}
+				}
+			}
+			if len(calls) == 0 {
+				log.Printf("[tool-validation] id=%s stage=stream-repair failed", requestID)
+				_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream selected an undeclared tool and repair failed", "code": "invalid_tool_call"}})+"\n\n")
+				_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+				return
+			}
 		}
 		if len(calls) > 0 {
 			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
-			_ = writeToolResponse(w, id, model, true, calls, chathub.Result{Text: text.String()})
+			_ = writeToolResponse(w, id, model, true, calls, toolResult)
 			if body.User != "" && res.ConversationID != "" {
 				s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
 			}
@@ -1414,6 +1463,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		calls = filterCompletedCalls(calls, ledger)
+		calls, _ = validateCalls("router", calls)
 		if len(calls) > 0 {
 			scope := fmt.Sprintf("%d:%v", len(body.Messages), completedCallIDs(ledger))
 			for i := range calls {
@@ -1432,6 +1482,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			if retryErr == nil {
 				calls, parsed = parseModelToolDecision(retryRes.Text, toolMaps, body.ToolChoice)
 				calls = filterCompletedCalls(calls, ledger)
+				calls, _ = validateCalls("router", calls)
 				if parsed && len(calls) > 0 {
 					scope := fmt.Sprintf("%d:%v:required-retry", len(body.Messages), completedCallIDs(ledger))
 					for i := range calls {
@@ -1446,17 +1497,8 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			return
 		}
 	}
-	if len(ledger.Completed) > 0 || len(ledger.Pending) > 0 {
-		answerPrompt += "\n" + ledger.RouterContext()
-	}
-	if len(ledger.Completed) > 0 {
-		answerPrompt += "\nFINAL ANSWER RULE: Report only actions supported by completed tool results. If the goal is not fully verified, state exactly what remains unconfirmed."
-	}
-	answerReq := chathub.Request{Text: answerPrompt, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments}
-	if planningMode == "native" {
-		answerReq.Tools = body.Tools
-		answerReq.ToolChoice = body.ToolChoice
-	}
+	answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode)
+	answerPrompt = answerReq.Text
 	var res chathub.Result
 	if body.Stream {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -1623,19 +1665,28 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			res = res2
 		}
 	}
-	if calls := fencedToolCalls(res.Text, toolMaps, body.ToolChoice); len(calls) > 0 {
-		calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
-		_ = writeToolResponse(w, id, model, body.Stream, calls, res)
-		return
+	invalidDetectedTool := false
+	if rawCalls := fencedToolCalls(res.Text, toolMaps, body.ToolChoice); len(rawCalls) > 0 {
+		calls, rejected := validateCalls("fenced", rawCalls)
+		invalidDetectedTool = rejected > 0
+		if len(calls) > 0 {
+			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+			_ = writeToolResponse(w, id, model, body.Stream, calls, res)
+			return
+		}
 	}
-	if calls := nativeToolCalls(res.Events, body.Tools); len(calls) > 0 {
-		calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
-		_ = writeToolResponse(w, id, model, body.Stream, calls, res)
-		return
+	if rawCalls := nativeToolCalls(res.Events, body.Tools); len(rawCalls) > 0 {
+		calls, rejected := validateCalls("native", rawCalls)
+		invalidDetectedTool = invalidDetectedTool || rejected > 0
+		if len(calls) > 0 {
+			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+			_ = writeToolResponse(w, id, model, body.Stream, calls, res)
+			return
+		}
 	}
-	// Recover natural-language tool intent when native mode emits no
-	// structured ChatHub tool event. Plain text remains a zero-call result.
-	if planningMode == "native" && len(toolMaps) > 0 && fmt.Sprint(body.ToolChoice) != "none" {
+	// Recover natural-language tool intent in native mode, and repair any
+	// structured event that failed the declared-name/schema boundary.
+	if (planningMode == "native" || invalidDetectedTool) && len(toolMaps) > 0 && fmt.Sprint(body.ToolChoice) != "none" {
 		routePrompt := modelToolRouterPrompt(prompt+"\n"+ledger.RouterContext(), toolMaps, body.ToolChoice)
 		routeRes, routeErr := s.chat.Chat(ctx, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments})
 		if routeErr == nil {
@@ -1646,6 +1697,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					calls, parsed = parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
 				}
 			}
+			calls, _ = validateCalls("native-recovery", calls)
 			if parsed && len(calls) > 0 {
 				scope := fmt.Sprintf("%d:%v:native-recovery", len(body.Messages), completedCallIDs(ledger))
 				for i := range calls {
