@@ -11,6 +11,8 @@ import (
 	"m365-copilot2api/internal/outbound"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +24,26 @@ import (
 // ChatHub sometimes sends through the text channel instead of HTTP 429.
 // Callers must independently probe the account before marking it unhealthy.
 var ErrRateLimitNotice = errors.New("upstream rate-limit notice")
+
+// DialError carries the HTTP status and optional Retry-After from a failed
+// WebSocket dial so the web layer can route it into the correct cooldown.
+type DialError struct {
+	Status     int
+	RetryAfter int
+}
+
+func (e *DialError) Error() string {
+	return fmt.Sprintf("ws dial: upstream %d", e.Status)
+}
+
+var chTrace = os.Getenv("M365_TRACE") == "1"
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
 
 func minInt(a, b int) int {
 	if a < b {
@@ -179,9 +201,17 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	}
 
 	dialStarted := time.Now()
-	conn, _, err := c.Dialer.DialContext(ctx, wsURL, c.HTTPHeader.Clone())
+	conn, resp, err := c.Dialer.DialContext(ctx, wsURL, c.HTTPHeader.Clone())
 	log.Printf("chathub timing ws_dial_ms=%d total_ms=%d", time.Since(dialStarted).Milliseconds(), time.Since(startedAt).Milliseconds())
 	if err != nil {
+		if resp != nil && (resp.StatusCode == 429 || resp.StatusCode == 401 || resp.StatusCode == 403) {
+			retryAfter := 0
+			if v, _ := strconv.Atoi(resp.Header.Get("Retry-After")); v > 0 {
+				retryAfter = v
+			}
+			log.Printf("chathub ws_dial %d Retry-After=%d", resp.StatusCode, retryAfter)
+			return Result{}, &DialError{Status: resp.StatusCode, RetryAfter: retryAfter}
+		}
 		return Result{}, fmt.Errorf("ws dial: %w", err)
 	}
 	defer conn.Close()
@@ -217,6 +247,9 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		if d == "" {
 			return nil
 		}
+		if chTrace {
+			log.Printf("[trace:emitDelta] len=%d streamed=%d preview=%q", len(d), streamed.Len()+len(d), truncate(d, 80))
+		}
 		if streamed.Len() == 0 {
 			log.Printf("chathub timing first_delta_ms=%d len=%d", time.Since(payloadSentAt).Milliseconds(), len(d))
 		}
@@ -251,6 +284,9 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		if snapshot == "" {
 			return nil
 		}
+		if chTrace {
+			log.Printf("[trace:emitSnapshot] cur=%d snapshot=%d", streamed.Len(), len(snapshot))
+		}
 		if rateLimited(snapshot) {
 			return ErrRateLimitNotice
 		}
@@ -259,18 +295,13 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			return emitDelta(snapshot)
 		}
 		if strings.HasPrefix(snapshot, cur) {
-			return emitDelta(strings.TrimPrefix(snapshot, cur))
-		}
-		if i := strings.Index(snapshot, cur); i >= 0 {
-			return emitDelta(snapshot[i+len(cur):])
-		}
-		if len(snapshot) > len(cur) && strings.HasSuffix(snapshot, cur) {
-			return emitDelta(snapshot[:len(snapshot)-len(cur)])
+			return emitDelta(snapshot[len(cur):])
 		}
 		if len(snapshot) <= len(cur) {
 			return nil
 		}
-		return emitDelta(snapshot)
+		log.Printf("[emitSnapshot] skip: cur=%d snapshot=%d (non-prefix rewrite)", len(cur), len(snapshot))
+		return nil
 	}
 	var final string
 	var throttling any
@@ -307,6 +338,9 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			part = strings.TrimSpace(part)
 			if part == "" {
 				continue
+			}
+			if chTrace {
+				log.Printf("[trace:ws] frame_len=%d preview=%q", len(part), truncate(part, 120))
 			}
 			events = append(events, json.RawMessage(append([]byte(nil), part...)))
 			var obj map[string]any
@@ -412,9 +446,11 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 				if errObj, ok := obj["error"].(map[string]any); ok {
 					return Result{}, fmt.Errorf("chathub completion error: %v", errObj)
 				}
-				// end of stream
 				log.Printf("chathub timing completion_frame_ms=%d streamed_text=%d events=%d", time.Since(payloadSentAt).Milliseconds(), streamed.Len(), len(events))
-				text := final
+				text := streamed.String()
+				if text == "" {
+					text = final
+				}
 				if text == "" {
 					text = strings.Join(deltas, "")
 				}

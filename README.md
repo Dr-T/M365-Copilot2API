@@ -126,20 +126,20 @@ python manage.py stop     # 停止服务
 
 ### Docker 部署
 
-仓库自带 `Dockerfile` 与 `docker-compose.yml`：
-
-```bash
-docker compose up -d --build
-```
-
-镜像内以非 root 用户运行，端口映射默认只暴露在 `127.0.0.1`，数据目录挂载在 `./data`，管理员密码可文件注入。
+> 由于个人精力有限且不做容器化维护，官方停止提供 Dockerfile / docker-compose 部署。需要容器部署的用户请自行根据原生环境打包，或在 Discussions 交流社区自建的 Docker 方案。
 
 ### 初始化与第一次调用
 
 浏览器打开控制台（默认 `http://127.0.0.1:4141`）：
 
-1. 用管理员密码登录（首次登录**强制要求修改密码**）。
-2. 在「账号」页发起 **PKCE 授权**，按引导完成 M365 账号登录。
+1. 用管理员密码登录（首次登录**强制要求修改密码**，默认密码 `admin123`）。
+2. 在「账号」页点击**开始授权**：
+   - 浏览器会弹出新窗口，跳转到 Microsoft 登录页。
+   - 用你的 M365 账号完成登录。
+   - 登录完成后弹出窗口会显示空白页或错误页——**这是正常的**，因为回调端点不是真正的网站，授权**尚未完成**。
+   - 从弹出窗口的**地址栏**复制完整 URL（包含 `code=...&state=...` 参数）。
+   - 回到控制台，将 URL 粘贴到「Callback URL」输入框，点击「Confirm and add」。
+   - 如果浏览器拦截了弹窗，请允许本站弹窗后重试。
 3. 授权成功后，在「API Key」页**创建第一个 API Key**。
 4. 用下面的 API 示例验证调用。
 
@@ -301,6 +301,8 @@ curl http://127.0.0.1:4141/v1/messages \
 ```
 
 其他任何支持 OpenAI / Anthropic `base_url` 配置的客户端（OpenCode、Cursor、Codex 等）同理，把 `BASE_URL` 指向网关即可。
+
+> 作者不针对任何第三方 Agent 框架的兼容性提供适配与排查。如有需要，自行适配。
 
 控制台「API Keys」页的「使用 API 密钥」弹窗可直接生成 Claude Code 的 `settings.json` 配置与终端环境变量，复制即可。
 

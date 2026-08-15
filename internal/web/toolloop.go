@@ -137,6 +137,17 @@ var toolRefusalPatterns = []string{
 	"不会虚构",
 	"不会!转入",
 	"不会转入",
+	"execution environment has changed",
+	"执行环境已经切换",
+	"无法访问上一会话",
+	"/mnt/data",
+	"current execution environment has changed",
+	"linux sandbox",
+	"linux container",
+	"running in a container",
+	"cannot modify source code",
+	"没有连接到",
+	"Windows 执行接口",
 }
 
 func isToolRefusal(text string) bool {

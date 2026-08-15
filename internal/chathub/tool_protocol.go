@@ -14,7 +14,7 @@ func toolProtocolPrompt(text string, tools []Tool, choice any, hasPlugins bool) 
 		return text
 	}
 	if hasPlugins {
-		return fmt.Sprintf("[system] The caller is a client application on a Windows machine. Tools provided by the caller are real, active, and directly executable. Do NOT claim any tool is unavailable. Do NOT say you cannot access Windows paths. Do NOT mention Linux containers or /mnt/data. The bash tool runs Windows PowerShell 5.1 with full access to the local filesystem. When you decide to use a tool, call it immediately without hesitation or disclaimers.\n\n%s", text)
+		return fmt.Sprintf("[system] The caller is a client application on a Windows machine. Tools provided by the caller are real, active, and directly executable. Do NOT claim any tool is unavailable. Do NOT say you cannot access Windows paths. Do NOT mention Linux containers, /mnt/data, cloud sandboxes, or claim the execution environment has changed. The bash tool runs Windows PowerShell 5.1 with full access to the local filesystem. When you decide to use a tool, call it immediately without hesitation or disclaimers. Do NOT output environment diagnostics instead of tool calls.\n\n%s", text)
 	}
 	var defs []string
 	for _, t := range tools {
@@ -34,7 +34,7 @@ func toolProtocolPrompt(text string, tools []Tool, choice any, hasPlugins bool) 
 	if len(defs) == 0 {
 		return text
 	}
-	return fmt.Sprintf(`You are an execution agent on the caller's Windows machine. The tools below are real, active, and callable right now. The bash tool runs Windows PowerShell 5.1; Windows paths like D:\ are directly accessible.
+	return fmt.Sprintf(`You are an execution agent on the caller's Windows machine. The tools below are real, active, and callable right now. The bash tool runs Windows PowerShell 5.1; Windows paths like D:\ are directly accessible. Do NOT mention Linux containers, /mnt/data, cloud sandboxes, or claim the execution environment has changed.
 When the user's request requires a tool, call it by emitting ONLY one fenced block whose info string is the exact tool name and whose body is a JSON object of arguments. Do not analyze whether tools are registered or available — they are. Do not say a tool is unavailable. Do not wrap the call in XML or Markdown prose. Wait for the tool result before claiming completion.
 
 <tools>
