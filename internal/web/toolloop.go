@@ -148,11 +148,51 @@ var toolRefusalPatterns = []string{
 	"cannot modify source code",
 	"没有连接到",
 	"Windows 执行接口",
+	"I can run that for you",
+	"running in sandbox",
+	"executing in sandbox",
+	"code interpreter",
+	"python sandbox",
+	"sandbox environment",
 }
 
 func isToolRefusal(text string) bool {
 	low := strings.ToLower(text)
 	for _, p := range toolRefusalPatterns {
+		if strings.Contains(low, strings.ToLower(p)) {
+			return true
+		}
+	}
+	return false
+}
+
+var sandboxHallucinationPatterns = []string{
+	"I can run that for you",
+	"I'll run that",
+	"let me run that",
+	"let me execute",
+	"running in sandbox",
+	"executing in sandbox",
+	"code interpreter",
+	"python sandbox",
+	"sandbox environment",
+	"/mnt/data",
+	"linux container",
+	"linux sandbox",
+	"cloud sandbox",
+	"execution environment has changed",
+	"cannot access the Windows path",
+	"only provides Linux",
+	"只提供 Linux 容器",
+	"执行环境已经切换",
+	"I don't have SSH access tools",
+	"I don't have any tools",
+	"none of which can reach",
+}
+
+func isSandboxHallucination(text string) bool {
+	low := strings.ToLower(text)
+	for _, p := range sandboxHallucinationPatterns {
 		if strings.Contains(low, strings.ToLower(p)) {
 			return true
 		}

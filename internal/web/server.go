@@ -761,6 +761,10 @@ func modelTone(model string) string {
 		return "Claude_Opus_4_6"
 	case "claude-opus-4-6-reasoning":
 		return "Claude_Opus_4_6_Reasoning"
+	case "claude-fable-5":
+		return "Claude_Fable_5"
+	case "claude-fable-5-reasoning":
+		return "Claude_Fable_5_Reasoning"
 	case "gpt-5.4-quick":
 		return "Gpt_5_4_Chat"
 	case "gpt-5.3-think-deeper":
@@ -1600,6 +1604,9 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		pt := EstimateTokens(prompt)
 		ct := EstimateTokens(res.Text)
 		log.Printf("[usage] stream id=%s pt=%d ct=%d res.Text=%d", id, pt, ct, len(res.Text))
+		if err == nil && ct == 0 {
+			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream returned empty completion; the requested model may be unavailable for this tenant", "code": "upstream_error"}})+"\n\n")
+		}
 		finish := "stop"
 		if err != nil {
 			finish = "stop"
@@ -1609,6 +1616,15 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 	} else {
 		res, err = s.chat.Chat(ctx, account, answerReq)
+		if IsEmptyCompletion(err) && tone != "magic" {
+			log.Printf("[tone-fallback] tone=%q returned empty, retrying with magic", tone)
+			magicReq := answerReq
+			magicReq.Tone = "magic"
+			if res2, err2 := s.chat.Chat(ctx, account, magicReq); err2 == nil && res2.Text != "" {
+				res = res2
+				err = nil
+			}
+		}
 		if err != nil && body.AccountID == "" && (body.ConversationID == "" || body.ConversationID == resolvedConversationID) && (IsRateLimited(err) || IsAuthFailure(err)) {
 			// Failover only when nothing pins the request to a conversation or
 			// account; a fresh chat can safely retry on the next healthy account.
@@ -1673,6 +1689,14 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		correction := "Your previous response incorrectly denied that caller tools are available. They are real, active, and callable on the caller's Windows machine. Call the appropriate tool now. Do not explain tool availability.\n\nUser request:\n" + prompt
 		res2, err2 := s.chat.Chat(ctx, account, chathub.Request{Text: correction, Tone: tone, Attachments: body.Attachments})
 		if err2 == nil && !isToolRefusal(res2.Text) {
+			res = res2
+		}
+	}
+	if len(toolMaps) > 0 && isSandboxHallucination(res.Text) {
+		log.Printf("[sandbox-eject] model used code interpreter/sandbox, retrying with explicit tool instruction")
+		correction := "CRITICAL: You must NOT use any built-in code interpreter, Python sandbox, or cloud execution environment. The caller has provided a bash tool that runs Windows PowerShell 5.1 on their local machine — use it to execute any commands or code. Do NOT say you cannot run code. Do NOT say you only have a Linux container. Call the bash tool NOW with the appropriate command.\n\nUser request:\n" + prompt
+		res2, err2 := s.chat.Chat(ctx, account, chathub.Request{Text: correction, Tone: tone, Attachments: body.Attachments})
+		if err2 == nil && !isSandboxHallucination(res2.Text) {
 			res = res2
 		}
 	}

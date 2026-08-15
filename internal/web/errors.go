@@ -43,5 +43,9 @@ func writeUpstreamError(w http.ResponseWriter, err error) {
 		writeOpenAIError(w, status, "rate_limit_error", "upstream is rate limiting; try again shortly")
 		return
 	}
+	if IsEmptyCompletion(err) {
+		writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "upstream returned empty completion; the requested model may be unavailable for this tenant")
+		return
+	}
 	writeOpenAIError(w, status, "upstream_error", upstreamError(err))
 }
