@@ -92,6 +92,7 @@ type Server struct {
 	responseMu          sync.Mutex
 	responseMessages    map[string]map[string]respHistory
 	usage               *usageLog
+	generatedImages     map[string]generatedImage
 }
 
 const maxResponsesPerTenant = 256
@@ -135,6 +136,7 @@ func New() (*Server, error) {
 		settings:            openSettingsStore(),
 		responseMessages:    map[string]map[string]respHistory{},
 		usage:               openUsageLog(),
+		generatedImages:     map[string]generatedImage{},
 	}, nil
 }
 
@@ -201,12 +203,18 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/v1/responses", s.responses)
 	m.HandleFunc("/v1/messages", s.anthropicMessages)
 	m.HandleFunc("/v1/images/generations", s.imageGenerations)
+	m.HandleFunc("/v1/images/edits", s.imageEdits)
+	m.HandleFunc("/v1/images/files/", s.generatedImageFile)
 	m.HandleFunc("/", s.rootPage)
 	return recoverPanics(requestID(httpTrace(securityHeaders(s.adminMiddleware(s.debugMiddleware(m))))))
 }
 
 func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/images/files/") {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if r.URL.Path == "/api/admin/login" || r.URL.Path == "/api/admin/session" || r.URL.Path == "/api/admin/change-password" || r.URL.Path == "/api/admin/logout" || r.URL.Path == "/api/auth/start" || r.URL.Path == "/api/auth/status" || r.URL.Path == "/api/auth/callback" || r.URL.Path == "/" || r.URL.Path == "/login" {
 			next.ServeHTTP(w, r)
 			return

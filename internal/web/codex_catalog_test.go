@@ -136,6 +136,18 @@ func TestModelsAdvertiseContextAndReasoning(t *testing.T) {
 	}
 }
 
+func TestModelCatalogAdvertisesGPTImage2(t *testing.T) {
+	for _, model := range modelCatalog() {
+		if model["id"] == "gpt-image-2" {
+			if model["display_name"] != "GPT Image 2" {
+				t.Fatalf("display_name=%#v", model["display_name"])
+			}
+			return
+		}
+	}
+	t.Fatal("gpt-image-2 missing from model catalog")
+}
+
 func TestConfiguredModelMappingsDriveCatalogAndRouting(t *testing.T) {
 	mappings := []modelMapping{{PublicModel: "gpt-5.6-sol", UpstreamTone: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Sol", DefaultReasoningLevel: "low"}}
 	models := configuredModelSpecs(mappings)
