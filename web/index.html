@@ -984,13 +984,7 @@ $('loginForm')?.addEventListener('submit',async e=>{
   e.preventDefault();
   try{
     const d=await api('/api/admin/login',{method:'POST',body:JSON.stringify({password:$('loginPassword').value})});
-    if(d.must_change_password){
-      const np=prompt('You must change the default password before continuing.\nEnter new password (min 6 characters):');
-      if(!np||np.length<6){showNotice('Password must be at least 6 characters','error');return;}
-      await api('/api/admin/change-password',{method:'POST',body:JSON.stringify({current_password:$('loginPassword').value,new_password:np})});
-      showNotice('Password changed. Please log in again with the new password.','success');
-      return;
-    }
+    if(d.must_change_password){location.replace('/login');return;}
     $('login').style.display='none';$('app').style.display='flex';
     showPage('dashboard');loadStats();
     showNotice('Logged in successfully','success');
@@ -1526,7 +1520,8 @@ async function saveSettings(){  try{
 // Init
 try{lucide.createIcons();}catch(e){}
 fetch('/api/admin/session').then(r=>r.json()).then(d=>{
-  if(d.authenticated){$('login').style.display='none';$('app').style.display='flex';showPage('dashboard');loadStats();loadOnboarding();}
+  if(d.authenticated&&d.must_change_password){location.replace('/login');}
+  else if(d.authenticated){$('login').style.display='none';$('app').style.display='flex';showPage('dashboard');loadStats();loadOnboarding();}
   else{$('login').style.display='grid';}
 }).catch(()=>{$('login').style.display='grid';});
 </script>
