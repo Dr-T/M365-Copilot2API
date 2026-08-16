@@ -1812,6 +1812,11 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			}
 		}
 	}
+	if isContentPolicyBlock(res.Text) {
+		log.Printf("[content-policy] M365 blocked the request, returning 503")
+		writeOpenAIError(w, http.StatusServiceUnavailable, "upstream_content_blocked", "M365 content policy blocked this request; try again or switch account")
+		return
+	}
 	if !completionEvidenceAllows(res.Text, ledger) {
 		res.Text = "I cannot confirm completion because no matching tool results were returned. No external action has been verified."
 	}

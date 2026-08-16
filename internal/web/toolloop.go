@@ -210,6 +210,25 @@ func isToolRefusal(text string) bool {
 	return false
 }
 
+var contentPolicyPatterns = []string{
+	"很抱歉，我无法响应",
+	"我很抱歉，我无法响应",
+	"i'm sorry, i can't respond",
+	"i'm sorry, i cannot respond",
+}
+
+func isContentPolicyBlock(text string) bool {
+	if len(text) > 300 {
+		return false
+	}
+	low := strings.ToLower(text)
+	for _, p := range contentPolicyPatterns {
+		if strings.Contains(low, strings.ToLower(p)) {
+			return true
+		}
+	}
+	return false
+}
 var sandboxHallucinationPatterns = []string{
 	"I can run that for you",
 	"I'll run that",

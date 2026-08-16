@@ -118,7 +118,7 @@ type Client struct {
 	HTTPHeader  http.Header
 	HTTPClient  *http.Client
 	Dialer      *websocket.Dialer
-	Preheater   *Preheater
+	Pool        *ConnPool
 	Trace       func(map[string]any)
 }
 
@@ -131,7 +131,7 @@ func NewClient() *Client {
 		HTTPHeader: h,
 		HTTPClient: outbound.HTTPClient(),
 		Dialer:     d,
-		Preheater:  NewPreheater(d, h),
+		Pool:       NewConnPool(d, h),
 	}
 }
 
@@ -207,10 +207,11 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	dialStarted := time.Now()
 	var conn *websocket.Conn
 	var reused bool
-	if c.Preheater != nil {
-		conn = c.Preheater.Take(acc.OID, acc.TID)
-		if conn != nil {
-			reused = true
+	if c.Pool != nil {
+		var poolErr error
+		conn, reused, poolErr = c.Pool.Take(ctx, acc.OID, acc.TID, wsURL)
+		if poolErr != nil {
+			return Result{}, fmt.Errorf("ws dial: %w", poolErr)
 		}
 	}
 	if conn == nil {
@@ -229,21 +230,21 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		}
 	}
 	log.Printf("chathub timing ws_dial_ms=%d total_ms=%d reused=%t", time.Since(dialStarted).Milliseconds(), time.Since(startedAt).Milliseconds(), reused)
-	defer conn.Close()
 
-	if c.Preheater != nil {
-		go func() {
-			warmCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			defer cancel()
-			warmURL, werr := buildWSURL(acc, uuid.NewString(), uuid.NewString(), uuid.NewString())
-			if werr == nil {
-				c.Preheater.Warm(warmCtx, acc.OID, acc.TID, warmURL)
-			}
-		}()
-	}
+	returnConn := true
+	defer func() {
+		if returnConn && conn != nil && c.Pool != nil {
+			_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+			_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			c.Pool.Return(acc.OID, acc.TID, conn)
+		} else if conn != nil {
+			conn.Close()
+		}
+	}()
 
 	if len(req.Attachments) > 0 {
 		if attachErr := <-attachCh; attachErr != nil {
+			returnConn = false
 			return Result{}, fmt.Errorf("upload attachment: %w", attachErr)
 		}
 	}
@@ -253,9 +254,11 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 
 	if !reused {
 		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"protocol":"json","version":1}`+rs)); err != nil {
+			returnConn = false
 			return Result{}, fmt.Errorf("handshake send: %w", err)
 		}
 		if _, _, err := conn.ReadMessage(); err != nil {
+			returnConn = false
 			return Result{}, fmt.Errorf("handshake recv: %w", err)
 		}
 	}
@@ -272,6 +275,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	log.Printf("chathub timing handshake_ms=%d", time.Since(dialStarted).Milliseconds())
 	payloadSentAt := time.Now()
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(payload)); err != nil {
+		returnConn = false
 		return Result{}, fmt.Errorf("chat send: %w", err)
 	}
 
@@ -360,10 +364,12 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		var read wsRead
 		select {
 		case <-ctx.Done():
+			returnConn = false
 			return Result{}, ctx.Err()
 		case read = <-readCh:
 		}
 		if read.err != nil {
+			returnConn = false
 			// Never convert a timeout or dropped WebSocket into a successful
 			// partial response. A response is complete only after SignalR type 3.
 			return Result{}, fmt.Errorf("ws read before completion: %w", read.err)
@@ -401,6 +407,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					if onEvent != nil {
 						for _, ev := range extractToolEvents(arg, seenStreamTools) {
 							if err := onEvent(ev); err != nil {
+								returnConn = false
 								return Result{}, err
 							}
 						}
@@ -413,6 +420,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 						ev.Raw = eventRaw(arg)
 						if ev.Kind != "text" && onEvent != nil {
 							if err := onEvent(ev); err != nil {
+								returnConn = false
 								return Result{}, err
 							}
 						}
@@ -431,6 +439,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					}
 					if w, ok := arg["writeAtCursor"].(string); ok && w != "" && !toolFrame {
 						if err := emitSnapshot(w); err != nil {
+							returnConn = false
 							return Result{}, err
 						}
 					}
@@ -447,6 +456,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 								// ChatHub often sends the first visible text as a full snapshot,
 								// followed by cursor deltas. Emit only the unseen suffix.
 								if err := emitSnapshot(text); err != nil {
+									returnConn = false
 									return Result{}, err
 								}
 							}
@@ -467,6 +477,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 				if msg, ok := res["message"].(string); ok {
 						final = msg
 						if rateLimited(final) {
+							returnConn = false
 							return Result{}, ErrRateLimitNotice
 						}
 					}
@@ -478,6 +489,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 
 			if int(t) == 3 {
 				if errObj, ok := obj["error"].(map[string]any); ok {
+					returnConn = false
 					return Result{}, fmt.Errorf("chathub completion error: %v", errObj)
 				}
 				log.Printf("chathub timing completion_frame_ms=%d streamed_text=%d events=%d", time.Since(payloadSentAt).Milliseconds(), streamed.Len(), len(events))
@@ -489,9 +501,11 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					text = strings.Join(deltas, "")
 				}
 				if rateLimited(text) {
+					returnConn = false
 					return Result{}, ErrRateLimitNotice
 				}
 				if text == "" {
+					returnConn = false
 					return Result{}, ErrEmptyCompletion
 				}
 				return Result{
@@ -513,6 +527,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	// Reaching the overall deadline without a SignalR completion frame is
 	// an incomplete upstream response. Do not return accumulated deltas as if
 	// they were a successful, finished answer.
+	returnConn = false
 	return Result{}, fmt.Errorf("chathub response deadline exceeded before completion")
 }
 
