@@ -34,7 +34,7 @@ type pendingPKCE struct {
 }
 
 // rateLimitCooldown is how long a rate-limited account stays out of rotation.
-const rateLimitCooldown = 3 * time.Minute
+const rateLimitCooldown = 30 * time.Second
 
 // maxAccountProbe bounds the round-robin walk when skipping unhealthy accounts.
 const maxAccountProbe = 16
@@ -205,6 +205,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/accounts", s.accounts)
 	m.HandleFunc("/api/accounts/refresh", s.refreshAccount)
 	m.HandleFunc("/api/accounts/token-health", s.tokenHealth)
+	m.HandleFunc("/api/accounts/clear-cooldown", s.clearCooldown)
 	m.HandleFunc("/api/accounts/delete", s.deleteAccount)
 	m.HandleFunc("/api/accounts/provision", s.provisionAccount)
 	m.HandleFunc("/api/auth/start", s.startPKCE)
@@ -493,7 +494,7 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 			ExpiresAt: a.ExpiresAt, UpdatedAt: a.UpdatedAt,
 		})
 	}
-	jsonOut(w, map[string]any{"accounts": out})
+	jsonOut(w, map[string]any{"accounts": out, "health": s.accountPool.Snapshot()})
 }
 
 func (s *Server) refreshAccount(w http.ResponseWriter, r *http.Request) {
@@ -555,6 +556,15 @@ func (s *Server) tokenHealth(w http.ResponseWriter, r *http.Request) {
 		out = append(out, e)
 	}
 	jsonOut(w, map[string]any{"accounts": out, "now": now.Format(time.RFC3339)})
+}
+
+func (s *Server) clearCooldown(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.accountPool.ClearAllCooldowns()
+	jsonOut(w, map[string]any{"status": "ok"})
 }
 
 func (s *Server) deleteAccount(w http.ResponseWriter, r *http.Request) {
