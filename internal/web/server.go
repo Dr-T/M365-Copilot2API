@@ -171,6 +171,17 @@ func (s *Server) InitM365CloudClient() {
 	log.Printf("[m365-cloud] client initialized for account %s", acc.Email)
 }
 
+func (s *Server) RefreshExpiredTokens() {
+	results := s.tokens.RefreshAllExpired()
+	for _, r := range results {
+		if r.Success {
+			log.Printf("[token-refresh] account=%s refreshed, expires=%s", r.Email, r.ExpiresAt.Format(time.RFC3339))
+		} else {
+			log.Printf("[token-refresh] account=%s failed: %s", r.Email, r.Error)
+		}
+	}
+}
+
 func (s *Server) Routes() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("/api/admin/login", s.adminLogin)
@@ -193,6 +204,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/update", s.update)
 	m.HandleFunc("/api/accounts", s.accounts)
 	m.HandleFunc("/api/accounts/refresh", s.refreshAccount)
+	m.HandleFunc("/api/accounts/token-health", s.tokenHealth)
 	m.HandleFunc("/api/accounts/delete", s.deleteAccount)
 	m.HandleFunc("/api/accounts/provision", s.provisionAccount)
 	m.HandleFunc("/api/auth/start", s.startPKCE)
@@ -505,6 +517,44 @@ func (s *Server) refreshAccount(w http.ResponseWriter, r *http.Request) {
 		"id": acc.ID, "email": acc.Email, "displayName": acc.DisplayName,
 		"status": acc.Status, "expiresAt": acc.ExpiresAt, "updatedAt": acc.UpdatedAt,
 	}})
+}
+
+func (s *Server) tokenHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		results := s.tokens.RefreshAllExpired()
+		refreshed, failed := 0, 0
+		for _, r := range results {
+			if r.Success {
+				refreshed++
+			} else {
+				failed++
+			}
+		}
+		jsonOut(w, map[string]any{"refreshed": refreshed, "failed": failed, "results": results})
+		return
+	}
+	list := s.tokens.List()
+	now := time.Now()
+	type entry struct {
+		ID        string    `json:"id"`
+		Email     string    `json:"email"`
+		Status    string    `json:"status"`
+		ExpiresAt time.Time `json:"expires_at"`
+		Expired   bool      `json:"expired"`
+		ExpiresIn string    `json:"expires_in"`
+	}
+	out := make([]entry, 0, len(list))
+	for _, a := range list {
+		e := entry{ID: a.ID, Email: a.Email, Status: a.Status, ExpiresAt: a.ExpiresAt}
+		if now.After(a.ExpiresAt) {
+			e.Expired = true
+			e.ExpiresIn = "expired"
+		} else {
+			e.ExpiresIn = a.ExpiresAt.Sub(now).Truncate(time.Second).String()
+		}
+		out = append(out, e)
+	}
+	jsonOut(w, map[string]any{"accounts": out, "now": now.Format(time.RFC3339)})
 }
 
 func (s *Server) deleteAccount(w http.ResponseWriter, r *http.Request) {

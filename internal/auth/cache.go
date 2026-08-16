@@ -315,3 +315,36 @@ func (s *Store) refreshInflight(acc AccountToken) (AccountToken, error) {
 func fmtExpired() error {
 	return errors.New("token_expired: refresh token missing or expired")
 }
+
+func (s *Store) RefreshAllExpired() []TokenRefreshResult {
+	s.mu.Lock()
+	candidates := make([]AccountToken, 0, len(s.data.Accounts))
+	for _, a := range s.data.Accounts {
+		if time.Now().After(a.ExpiresAt.Add(-30*time.Second)) && a.RefreshToken != "" {
+			candidates = append(candidates, a)
+		}
+	}
+	s.mu.Unlock()
+	var results []TokenRefreshResult
+	for _, a := range candidates {
+		acc, err := s.EnsureValid(a.ID)
+		r := TokenRefreshResult{ID: a.ID, Email: a.Email}
+		if err != nil {
+			r.Success = false
+			r.Error = err.Error()
+		} else {
+			r.Success = true
+			r.ExpiresAt = acc.ExpiresAt
+		}
+		results = append(results, r)
+	}
+	return results
+}
+
+type TokenRefreshResult struct {
+	ID        string    `json:"id"`
+	Email     string    `json:"email"`
+	Success   bool      `json:"success"`
+	Error     string    `json:"error,omitempty"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
+}
