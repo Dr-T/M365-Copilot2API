@@ -42,27 +42,26 @@ var configurableCodexModels = []string{
 }
 
 type runtimeSettings struct {
-	MaxToolCallsPerTurn    int            `json:"maxToolCallsPerTurn"`
-	MaxToolRounds          int            `json:"maxToolRounds"`
-	ContextWindow          int            `json:"contextWindow"`
-	MaxOutputTokens        int            `json:"maxOutputTokens"`
-	ChatTimeoutSeconds     int            `json:"chatTimeoutSeconds"`
-	ImageTimeoutSeconds    int            `json:"imageTimeoutSeconds"`
-	AccountCooldownMinutes int            `json:"accountCooldownMinutes"`
-	LogLevel               string         `json:"logLevel"`
-	DebugLogPath           string         `json:"debugLogPath"`
-	ListenAddress          string         `json:"listenAddress"`
-	ConfigPath             string         `json:"configPath"`
-	TokenCachePath         string         `json:"tokenCachePath"`
-	SessionCachePath       string         `json:"sessionCachePath"`
-	OutboundProxy          string         `json:"outboundProxy"`
-	ProxyPool              []string       `json:"proxyPool,omitempty"`
-	ClientID               string         `json:"clientId"`
-	Authority              string         `json:"authority"`
-	RedirectURI            string         `json:"redirectUri"`
-	Scope                  string         `json:"scope"`
-	ModelMappings          []modelMapping `json:"modelMappings"`
-	ToolPlanningMode       string         `json:"toolPlanningMode"`
+	MaxToolCallsPerTurn int            `json:"maxToolCallsPerTurn"`
+	MaxToolRounds       int            `json:"maxToolRounds"`
+	ContextWindow       int            `json:"contextWindow"`
+	MaxOutputTokens     int            `json:"maxOutputTokens"`
+	ChatTimeoutSeconds  int            `json:"chatTimeoutSeconds"`
+	ImageTimeoutSeconds int            `json:"imageTimeoutSeconds"`
+	LogLevel            string         `json:"logLevel"`
+	DebugLogPath        string         `json:"debugLogPath"`
+	ListenAddress       string         `json:"listenAddress"`
+	ConfigPath          string         `json:"configPath"`
+	TokenCachePath      string         `json:"tokenCachePath"`
+	SessionCachePath    string         `json:"sessionCachePath"`
+	OutboundProxy       string         `json:"outboundProxy"`
+	ProxyPool           []string       `json:"proxyPool,omitempty"`
+	ClientID            string         `json:"clientId"`
+	Authority           string         `json:"authority"`
+	RedirectURI         string         `json:"redirectUri"`
+	Scope               string         `json:"scope"`
+	ModelMappings       []modelMapping `json:"modelMappings"`
+	ToolPlanningMode    string         `json:"toolPlanningMode"`
 }
 
 type settingsStore struct {
@@ -82,7 +81,7 @@ func defaultRuntimeSettings() runtimeSettings {
 	return runtimeSettings{
 		MaxToolCallsPerTurn: envInt("M365_MAX_TOOL_CALLS_PER_TURN", 32), MaxToolRounds: envInt("M365_MAX_TOOL_ROUNDS", 512),
 		ContextWindow: envInt("M365_CONTEXT_WINDOW", 128000), MaxOutputTokens: envInt("M365_MAX_OUTPUT_TOKENS", 16384),
-		ChatTimeoutSeconds: envInt("M365_CHAT_TIMEOUT_SECONDS", 120), ImageTimeoutSeconds: envInt("M365_IMAGE_TIMEOUT_SECONDS", 150), AccountCooldownMinutes: envInt("M365_ACCOUNT_COOLDOWN_MINUTES", 20), LogLevel: firstNonEmptySetting(os.Getenv("M365_LOG_LEVEL"), "info"),
+		ChatTimeoutSeconds: envInt("M365_CHAT_TIMEOUT_SECONDS", 120), ImageTimeoutSeconds: envInt("M365_IMAGE_TIMEOUT_SECONDS", 150), LogLevel: firstNonEmptySetting(os.Getenv("M365_LOG_LEVEL"), "info"),
 		DebugLogPath: os.Getenv("M365_DEBUG_LOG"), ListenAddress: os.Getenv("M365_LISTEN"), ConfigPath: os.Getenv("M365_CONFIG"),
 		TokenCachePath: os.Getenv("M365_TOKEN_CACHE"), SessionCachePath: os.Getenv("M365_SESSION_CACHE"), OutboundProxy: os.Getenv(outbound.EnvProxy), ClientID: os.Getenv("M365_CLIENT_ID"),
 		Authority: os.Getenv("M365_AUTHORITY"), RedirectURI: os.Getenv("M365_REDIRECT_URI"), Scope: os.Getenv("M365_SCOPE"),
@@ -139,9 +138,6 @@ func validateSettings(v runtimeSettings) error {
 	}
 	if v.ImageTimeoutSeconds < 5 || v.ImageTimeoutSeconds > 3600 {
 		return fmt.Errorf("图片超时必须为 5-3600 秒")
-	}
-	if v.AccountCooldownMinutes < 1 || v.AccountCooldownMinutes > 1440 {
-		return fmt.Errorf("账号冷却时间必须为 1-1440 分钟")
 	}
 	if v.LogLevel != "silent" && v.LogLevel != "error" && v.LogLevel != "warn" && v.LogLevel != "info" && v.LogLevel != "debug" {
 		return fmt.Errorf("日志等级必须为 silent、error、warn、info 或 debug")

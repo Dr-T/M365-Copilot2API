@@ -150,7 +150,7 @@ func (h *accountHealth) RateLimited(accountID string) bool {
 
 func (h *accountHealth) MarkFailure(accountID string, err error, window time.Duration) {
 	if window <= 0 {
-		window = 20 * time.Minute
+		window = 60 * time.Second
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -167,7 +167,14 @@ func (h *accountHealth) MarkFailure(accountID string, err error, window time.Dur
 	if IsRateLimited(err) {
 		delete(h.authFail, accountID)
 		h.limited[accountID] = true
-		h.cooldown[accountID] = time.Now().Add(window)
+		cd := window
+		if ra := RetryAfterSeconds(err); ra > 0 {
+			cd = time.Duration(ra) * time.Second
+			if cd > 30*time.Minute {
+				cd = 30 * time.Minute
+			}
+		}
+		h.cooldown[accountID] = time.Now().Add(cd)
 	}
 }
 
@@ -225,6 +232,15 @@ func (h *accountHealth) Snapshot() map[string]map[string]any {
 		}
 	}
 	return out
+}
+
+func (h *accountHealth) ClearAllCooldowns() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cooldown = map[string]time.Time{}
+	h.authFail = map[string]bool{}
+	h.limited = map[string]bool{}
+	h.calls = map[string]uint64{}
 }
 
 // EarliestRecovery returns the earliest time at which any account may become

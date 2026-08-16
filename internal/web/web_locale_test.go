@@ -24,7 +24,7 @@ func TestWebIndexDefaultsToChineseUntilLocaleIsSelected(t *testing.T) {
 	}
 }
 
-func TestWebIndexIncludesAccountCooldownControls(t *testing.T) {
+func TestWebIndexIncludesAccountMonitoringControls(t *testing.T) {
 	body, err := os.ReadFile("../../web/index.html")
 	if err != nil {
 		t.Fatal(err)
@@ -32,8 +32,6 @@ func TestWebIndexIncludesAccountCooldownControls(t *testing.T) {
 	page := string(body)
 	for _, needle := range []string{
 		`data-f="cooldown"`,
-		`id="setAccountCooldown"`,
-		`body.accountCooldownMinutes=parseInt(cooldown)`,
 		`x.status==='cooldown'`,
 		`/api/accounts/schedule`,
 		`x.callCount||0`,

@@ -33,30 +33,18 @@ type pendingPKCE struct {
 	RedirectURI string
 }
 
-const defaultAccountCooldown = 20 * time.Minute
+const rateLimitCooldown = 30 * time.Second
 
-// maxAccountProbe bounds the round-robin walk when skipping unhealthy accounts.
 const maxAccountProbe = 16
 
 const rateLimitProbePrompt = "Reply with exactly: OK"
-
-func (s *Server) accountCooldown() time.Duration {
-	if s == nil || s.settings == nil {
-		return defaultAccountCooldown
-	}
-	minutes := s.settings.get().AccountCooldownMinutes
-	if minutes < 1 {
-		return defaultAccountCooldown
-	}
-	return time.Duration(minutes) * time.Minute
-}
 
 func (s *Server) markAccountResult(accountID string, err error) {
 	if s == nil || s.accountPool == nil || accountID == "" {
 		return
 	}
 	if err != nil {
-		s.accountPool.MarkFailure(accountID, err, s.accountCooldown())
+		s.accountPool.MarkFailure(accountID, err, rateLimitCooldown)
 		return
 	}
 	s.accountPool.MarkSuccess(accountID)
@@ -88,7 +76,7 @@ func (s *Server) confirmRateLimitNotice(ctx context.Context, acc auth.AccountTok
 	if errors.Is(probeErr, chathub.ErrRateLimitNotice) || IsRateLimited(probeErr) {
 		return true, &UpstreamHTTPError{
 			Status:     http.StatusTooManyRequests,
-			RetryAfter: int(s.accountCooldown().Seconds()),
+			RetryAfter: int(rateLimitCooldown.Seconds()),
 		}
 	}
 	return false, probeErr
@@ -192,6 +180,17 @@ func (s *Server) InitM365CloudClient() {
 	log.Printf("[m365-cloud] client initialized for account %s", acc.Email)
 }
 
+func (s *Server) RefreshExpiredTokens() {
+	results := s.tokens.RefreshAllExpired()
+	for _, r := range results {
+		if r.Success {
+			log.Printf("[token-refresh] account=%s refreshed, expires=%s", r.Email, r.ExpiresAt.Format(time.RFC3339))
+		} else {
+			log.Printf("[token-refresh] account=%s failed: %s", r.Email, r.Error)
+		}
+	}
+}
+
 func (s *Server) Routes() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("/api/admin/login", s.adminLogin)
@@ -215,6 +214,8 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/accounts", s.accounts)
 	m.HandleFunc("/api/accounts/refresh", s.refreshAccount)
 	m.HandleFunc("/api/accounts/schedule", s.scheduleAccount)
+	m.HandleFunc("/api/accounts/token-health", s.tokenHealth)
+	m.HandleFunc("/api/accounts/clear-cooldown", s.clearCooldown)
 	m.HandleFunc("/api/accounts/delete", s.deleteAccount)
 	m.HandleFunc("/api/accounts/provision", s.provisionAccount)
 	m.HandleFunc("/api/auth/start", s.startPKCE)
@@ -520,7 +521,7 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 			ExpiresAt: a.ExpiresAt, UpdatedAt: a.UpdatedAt,
 		})
 	}
-	jsonOut(w, map[string]any{"accounts": out})
+	jsonOut(w, map[string]any{"accounts": out, "health": s.accountPool.Snapshot()})
 }
 
 func (s *Server) refreshAccount(w http.ResponseWriter, r *http.Request) {
@@ -564,6 +565,53 @@ func (s *Server) scheduleAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonOut(w, map[string]any{"status": "updated", "scheduleEnabled": body.Enabled})
+}
+
+func (s *Server) tokenHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		results := s.tokens.RefreshAllExpired()
+		refreshed, failed := 0, 0
+		for _, r := range results {
+			if r.Success {
+				refreshed++
+			} else {
+				failed++
+			}
+		}
+		jsonOut(w, map[string]any{"refreshed": refreshed, "failed": failed, "results": results})
+		return
+	}
+	list := s.tokens.List()
+	now := time.Now()
+	type entry struct {
+		ID        string    `json:"id"`
+		Email     string    `json:"email"`
+		Status    string    `json:"status"`
+		ExpiresAt time.Time `json:"expires_at"`
+		Expired   bool      `json:"expired"`
+		ExpiresIn string    `json:"expires_in"`
+	}
+	out := make([]entry, 0, len(list))
+	for _, a := range list {
+		e := entry{ID: a.ID, Email: a.Email, Status: a.Status, ExpiresAt: a.ExpiresAt}
+		if now.After(a.ExpiresAt) {
+			e.Expired = true
+			e.ExpiresIn = "expired"
+		} else {
+			e.ExpiresIn = a.ExpiresAt.Sub(now).Truncate(time.Second).String()
+		}
+		out = append(out, e)
+	}
+	jsonOut(w, map[string]any{"accounts": out, "now": now.Format(time.RFC3339)})
+}
+
+func (s *Server) clearCooldown(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.accountPool.ClearAllCooldowns()
+	jsonOut(w, map[string]any{"status": "ok"})
 }
 
 func (s *Server) deleteAccount(w http.ResponseWriter, r *http.Request) {
@@ -960,7 +1008,7 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 					Attachments:    body.Attachments,
 				})
 				if err2 == nil {
-					s.accountPool.MarkFailure(acc.ID, err, s.accountCooldown())
+					s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
 					s.accountPool.MarkSuccess(next.ID)
 					acc = next
 					res = res2
@@ -970,7 +1018,7 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		s.accountPool.MarkFailure(acc.ID, err, s.accountCooldown())
+		s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
 		writeUpstreamError(w, err)
 		return
 	}
@@ -1543,13 +1591,13 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					err = nil
 				} else {
 					err = err2
-					s.accountPool.MarkFailure(next.ID, err2, s.accountCooldown())
+					s.accountPool.MarkFailure(next.ID, err2, rateLimitCooldown)
 				}
 			}
 		}
 		if err != nil {
 			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
-			s.accountPool.MarkFailure(acc.ID, err, s.accountCooldown())
+			s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
 			if convReused {
 				s.invalidateConvCache(acc.ID, convCacheModel)
 			}
@@ -1633,7 +1681,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		routePrompt := modelToolRouterPrompt(answerPrompt+"\n"+ledger.RouterContext(), toolMaps, body.ToolChoice)
 		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments})
 		if routeErr != nil {
-			s.accountPool.MarkFailure(acc.ID, routeErr, s.accountCooldown())
+			s.accountPool.MarkFailure(acc.ID, routeErr, rateLimitCooldown)
 			if IsRateLimited(routeErr) || IsAuthFailure(routeErr) {
 				next, nerr := s.nextHealthyAccount(acc.ID)
 				if nerr == nil {
@@ -1644,7 +1692,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 						acc = next
 						account = chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}
 					} else {
-						s.accountPool.MarkFailure(next.ID, err2, s.accountCooldown())
+						s.accountPool.MarkFailure(next.ID, err2, rateLimitCooldown)
 					}
 				}
 			}
@@ -1781,7 +1829,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					err = nil
 				} else {
 					err = err2
-					s.accountPool.MarkFailure(next.ID, err2, s.accountCooldown())
+					s.accountPool.MarkFailure(next.ID, err2, rateLimitCooldown)
 				}
 			}
 		}
@@ -1801,7 +1849,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			s.accountPool.MarkSuccess(acc.ID)
 		} else {
 			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
-			s.accountPool.MarkFailure(acc.ID, err, s.accountCooldown())
+			s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
 			if convReused {
 				s.invalidateConvCache(acc.ID, convCacheModel)
 			}
@@ -1861,7 +1909,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 	}
 	if err != nil {
-		s.accountPool.MarkFailure(acc.ID, err, s.accountCooldown())
+		s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
 		if convReused {
 			s.invalidateConvCache(acc.ID, convCacheModel)
 			log.Printf("[conv-cache] invalidated account=%s model=%s after error: %v", acc.ID, convCacheModel, err)
