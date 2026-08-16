@@ -32,7 +32,8 @@ var (
 
 func directClients() *Clients {
 	tlsCache := tls.NewLRUClientSessionCache(32)
-	tlsConf := &tls.Config{ClientSessionCache: tlsCache}
+	httpTLSConf := &tls.Config{ClientSessionCache: tlsCache}
+	wsTLSConf := &tls.Config{ClientSessionCache: tlsCache, NextProtos: []string{"http/1.1"}}
 	t := &http.Transport{
 		Proxy:                 nil,
 		DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
@@ -41,7 +42,7 @@ func directClients() *Clients {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     true,
-		TLSClientConfig:       tlsConf,
+		TLSClientConfig:       httpTLSConf,
 	}
 	return &Clients{
 		HTTP: &http.Client{Transport: t},
@@ -50,7 +51,7 @@ func directClients() *Clients {
 			ReadBufferSize:    256 * 1024,
 			WriteBufferSize:   16 * 1024,
 			NetDialContext:    t.DialContext,
-			TLSClientConfig:   tlsConf,
+			TLSClientConfig:   wsTLSConf,
 		},
 	}
 }

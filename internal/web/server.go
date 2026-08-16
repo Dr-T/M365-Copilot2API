@@ -94,6 +94,7 @@ type Server struct {
 	responseMessages    map[string]map[string]respHistory
 	usage               *usageLog
 	generatedImages     map[string]generatedImage
+	convCache           *conversationCache
 }
 
 const maxResponsesPerTenant = 256
@@ -139,7 +140,17 @@ func New() (*Server, error) {
 		responseMessages:    map[string]map[string]respHistory{},
 		usage:               openUsageLog(),
 		generatedImages:     map[string]generatedImage{},
+		convCache:           newConversationCache(),
 	}, nil
+}
+
+func (s *Server) StartConvCacheGC() {
+	go func() {
+		for {
+			time.Sleep(2 * time.Minute)
+			s.convCache.GC()
+		}
+	}()
 }
 
 func (s *Server) InitM365CloudClient() {
@@ -1191,6 +1202,33 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Conversation cache: reuse existing M365 conversation for same account+model
+	// to avoid re-processing full system prompt + history each request (latency
+	// drops from 3-5s to ~1s). Only kicks in when no explicit conversation ID
+	// was provided by client, session key, user session, or session resolver.
+	convReused := false
+	convCacheModel := firstNonEmpty(body.Model, "m365-copilot")
+	if body.ConversationID == "" && len(body.Messages) > 1 {
+		sysHash := systemPromptHash(body.Messages)
+		if cached := s.convCache.Lookup(acc.ID, convCacheModel); cached != nil && cached.SystemPrompt == sysHash {
+			if len(body.Messages) > cached.MessageCount {
+				incPrompt, incAtt := flattenPromptMessages(body.Messages[cached.MessageCount:], nil)
+				incPrompt = strings.TrimSpace(incPrompt)
+				if incPrompt != "" {
+					body.ConversationID = cached.ConversationID
+					body.SessionID = cached.SessionID
+					answerPrompt = incPrompt
+					body.Attachments = incAtt
+					convReused = true
+					log.Printf("[conv-cache] hit account=%s model=%s conversation=%s cached_msgs=%d new_msgs=%d", acc.ID, convCacheModel, cached.ConversationID, cached.MessageCount, len(body.Messages))
+				}
+			}
+		}
+	}
+	if !convReused && body.ConversationID == "" {
+		log.Printf("[conv-cache] miss account=%s model=%s", acc.ID, convCacheModel)
+	}
+
 	// Normalize tools once. Selection is always made by the upstream model;
 	// the gateway only validates its structured decision and converts protocols.
 	toolMaps := make([]map[string]any, 0, len(body.Tools))
@@ -1421,6 +1459,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
 			s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
+			if convReused {
+				s.invalidateConvCache(acc.ID, convCacheModel)
+			}
 			msg := upstreamError(err)
 			if IsRateLimited(err) {
 				msg = "upstream is rate limiting; try again shortly"
@@ -1472,6 +1513,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
 			}
 			s.bindConversation(acc, &body, r, res, answerPrompt, startedAt)
+			s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 			return
 		}
 		if err := emitText(pending.String()); err != nil {
@@ -1485,6 +1527,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
 		}
 		s.bindConversation(acc, &body, r, res, answerPrompt, startedAt)
+		s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 		return
 	}
 	// Ask the upstream model to select and validate the next tool. The gateway
@@ -1662,6 +1705,9 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		} else {
 			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
 			s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
+			if convReused {
+				s.invalidateConvCache(acc.ID, convCacheModel)
+			}
 			msg := upstreamError(err)
 			if IsRateLimited(err) {
 				msg = "upstream is rate limiting; try again shortly"
@@ -1719,6 +1765,10 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	}
 	if err != nil {
 		s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
+		if convReused {
+			s.invalidateConvCache(acc.ID, convCacheModel)
+			log.Printf("[conv-cache] invalidated account=%s model=%s after error: %v", acc.ID, convCacheModel, err)
+		}
 		writeUpstreamError(w, err)
 		return
 	}
@@ -1728,6 +1778,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
 		}
 		s.bindConversation(acc, &body, r, res, prompt, startedAt)
+		s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 		return
 	}
 
@@ -1740,6 +1791,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	}
 	if res.ConversationID != "" {
 		s.bindConversation(acc, &body, r, res, prompt, startedAt)
+		s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 	}
 	if res.ConversationID != "" {
 		resolved := s.sessionResolver.Resolve(r, &body)
