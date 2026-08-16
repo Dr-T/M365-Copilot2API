@@ -557,6 +557,9 @@ func (sr *sessionResolver) UnbindByConversation(conversationID string) int {
 }
 
 func cloneMessages(msgs []oaiMsg) []oaiMsg {
+	if len(msgs) > 20 {
+		msgs = msgs[len(msgs)-20:]
+	}
 	out := make([]oaiMsg, len(msgs))
 	copy(out, msgs)
 	return out

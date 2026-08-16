@@ -382,9 +382,10 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			if chTrace {
 				log.Printf("[trace:ws] frame_len=%d preview=%q", len(part), truncate(part, 120))
 			}
-			events = append(events, json.RawMessage(append([]byte(nil), part...)))
+			b := []byte(part)
+			events = append(events, json.RawMessage(b))
 			var obj map[string]any
-			if err := json.Unmarshal([]byte(part), &obj); err != nil {
+			if err := json.Unmarshal(b, &obj); err != nil {
 				continue
 			}
 			t, _ := obj["type"].(float64)
