@@ -90,6 +90,27 @@ M365 Copilot2API 是一个用 Go 编写的自托管网关，把微软 365 Copilo
 - Go 1.23+（`go.mod` 声明的最低版本）
 - Windows / Linux 均可；Windows 上推荐用仓库自带的 `manage.py` 管理生命周期
 
+### 预编译二进制（推荐）
+
+从 [GitHub Releases](https://github.com/HEXUXIU/M365-Copilot2API/releases) 下载对应平台的二进制：
+
+| 平台 | 架构 | 文件 |
+|------|------|------|
+| Linux | x86_64 / arm64 / i386 | `m365-copilot2api-linux-{amd64,arm64,386}` |
+| Windows | x86_64 / arm64 / i386 | `m365-copilot2api-windows-{amd64,arm64,386}.exe` |
+| macOS | x86_64 / arm64 | `m365-copilot2api-darwin-{amd64,arm64}` |
+
+```bash
+# Linux / macOS 示例
+chmod +x m365-copilot2api-linux-amd64
+./m365-copilot2api-linux-amd64
+```
+
+```powershell
+# Windows 示例
+.\m365-copilot2api-windows-amd64.exe
+```
+
 ### 源码编译
 
 ```powershell
@@ -126,7 +147,7 @@ python manage.py stop     # 停止服务
 
 ### Docker 部署
 
-> 由于个人精力有限且不做容器化维护，官方停止提供 Dockerfile / docker-compose 部署。需要容器部署的用户请自行根据原生环境打包，或在 Discussions 交流社区自建的 Docker 方案。
+> 官方不提供 Dockerfile。如需容器化部署，可自行基于预编译二进制或源码构建镜像，或在 Discussions 交流社区方案。
 
 ### 初始化与第一次调用
 
