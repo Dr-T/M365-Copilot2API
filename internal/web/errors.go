@@ -1,10 +1,22 @@
 package web
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+
+	"m365-copilot2api/internal/auth"
 )
+
+func logOAuthError(stage string, err error) {
+	var oauthErr *auth.OAuthError
+	if errors.As(err, &oauthErr) {
+		log.Printf("oauth_error stage=%s error=%q aadsts=%q http_status=%d correlation_id=%q trace_id=%q", stage, oauthErr.Code, oauthErr.AADSTS, oauthErr.HTTPStatus, oauthErr.CorrelationID, oauthErr.TraceID)
+		return
+	}
+	log.Printf("oauth_error stage=%s error=%q", stage, "request_failed")
+}
 
 // upstreamError keeps transport details, including URLs and credentials, out
 // of client-visible responses while retaining a server-side diagnostic.
@@ -38,9 +50,13 @@ func writeUpstreamError(w http.ResponseWriter, err error) {
 	status := upstreamStatus(err)
 	if status == http.StatusTooManyRequests {
 		if w.Header().Get("Retry-After") == "" {
-			w.Header().Set("Retry-After", fmt.Sprintf("%d", int(rateLimitCooldown.Seconds())))
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", int(defaultAccountCooldown.Seconds())))
 		}
 		writeOpenAIError(w, status, "rate_limit_error", "upstream is rate limiting; try again shortly")
+		return
+	}
+	if IsEmptyCompletion(err) {
+		writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "upstream returned empty completion; the requested model may be unavailable for this tenant")
 		return
 	}
 	writeOpenAIError(w, status, "upstream_error", upstreamError(err))

@@ -73,6 +73,7 @@ func TestAdminSettingsHTTP(t *testing.T) {
 	v.MaxToolRounds = 24
 	v.ChatTimeoutSeconds = 75
 	v.ImageTimeoutSeconds = 180
+	v.AccountCooldownMinutes = 25
 	b, _ := json.Marshal(v)
 	r = httptest.NewRequest(http.MethodPut, "/api/admin/settings", bytes.NewReader(b))
 	w = httptest.NewRecorder()
@@ -80,7 +81,7 @@ func TestAdminSettingsHTTP(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("PUT=%d %s", w.Code, w.Body.String())
 	}
-	if st.get().ChatTimeoutSeconds != 75 {
+	if st.get().ChatTimeoutSeconds != 75 || st.get().AccountCooldownMinutes != 25 {
 		t.Fatal("hot setting not updated")
 	}
 	v.MaxToolCallsPerTurn = 0

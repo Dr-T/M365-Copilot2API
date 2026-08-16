@@ -479,6 +479,18 @@ func (sr *sessionResolver) GetSession(sessionID string) (sessionBinding, bool) {
 	return s, ok
 }
 
+func (sr *sessionResolver) GetConversation(conversationID string) (sessionBinding, bool) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	for _, session := range sr.sessions {
+		if session.ConversationID == conversationID {
+			session.ContextHistory = cloneMessages(session.ContextHistory)
+			return session, true
+		}
+	}
+	return sessionBinding{}, false
+}
+
 func (sr *sessionResolver) ListSessions() []sessionBinding {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
@@ -545,6 +557,9 @@ func (sr *sessionResolver) UnbindByConversation(conversationID string) int {
 }
 
 func cloneMessages(msgs []oaiMsg) []oaiMsg {
+	if len(msgs) > 20 {
+		msgs = msgs[len(msgs)-20:]
+	}
 	out := make([]oaiMsg, len(msgs))
 	copy(out, msgs)
 	return out

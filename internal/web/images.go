@@ -60,8 +60,8 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 	if b.N <= 0 {
 		b.N = 1
 	}
-	if b.N > 4 {
-		http.Error(w, "n must be between 1 and 4", 400)
+	if b.N > 10 {
+		writeOpenAIError(w, 400, "invalid_request_error", "n must be between 1 and 10")
 		return
 	}
 	format := strings.ToLower(strings.TrimSpace(b.ResponseFormat))
@@ -81,7 +81,7 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 		acc.OID, acc.TID = extractOIDTID(acc.AccessToken)
 	}
 	if acc.OID == "" || acc.TID == "" {
-		http.Error(w, "account missing oid/tid", 400)
+		writeOpenAIError(w, 400, "invalid_request_error", "account missing oid/tid — re-login with PKCE")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ImageTimeoutSeconds)*time.Second)
@@ -100,9 +100,9 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 		endpoint = "/v1/images/edits"
 		prompt = fmt.Sprintf("Edit the first attached image with GPT Image 2. Size: %s. Instructions: %s. Preserve everything not requested to change. Return the edited image URL directly.", size, b.Prompt)
 	}
-	res, err := s.chat.Chat(ctx, chathub.Account{AccessToken: acc.AccessToken, OID: acc.OID, TID: acc.TID}, chathub.Request{Text: prompt, Tone: "magic", Attachments: b.Attachments})
+	res, err := s.chatWithAccount(ctx, acc.ID, chathub.Account{AccessToken: acc.AccessToken, OID: acc.OID, TID: acc.TID}, chathub.Request{Text: prompt, Tone: "magic", Attachments: b.Attachments})
 	if err != nil {
-		http.Error(w, upstreamError(err), 502)
+		writeUpstreamError(w, err)
 		return
 	}
 	log.Printf("[image-gen] conversation=%s images=%d text_len=%d events=%d raw_len=%d", res.ConversationID, len(res.Images), len(res.Text), len(res.Events), len(res.RawResult))
@@ -481,4 +481,56 @@ func extractImageURLs(raw string) []string {
 	}
 	walk(v)
 	return out
+}
+
+func downloadImageAsBase64(url string) (b64, contentType string, err error) {
+	return downloadImageAsBase64WithToken(url, "")
+}
+
+func downloadImageAsBase64WithToken(url, token string) (b64, contentType string, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", "", err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return "", "", fmt.Errorf("download returned %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
+	if err != nil {
+		return "", "", err
+	}
+	ct := resp.Header.Get("Content-Type")
+	if ct == "" {
+		ct = http.DetectContentType(body)
+	}
+	enc := base64.StdEncoding.EncodeToString(body)
+	return enc, ct, nil
+}
+
+func downloadImageAsDataURI(url string) (string, error) {
+	b64, ct, err := downloadImageAsBase64(url)
+	if err != nil {
+		return url, nil
+	}
+	return "data:" + ct + ";base64," + b64, nil
+}
+
+func downloadImageAsDataURIWithToken(url, token string) (string, error) {
+	b64, ct, err := downloadImageAsBase64WithToken(url, token)
+	if err != nil {
+		log.Printf("[image-download] failed url=%s token_len=%d err=%v", url[:80], len(token), err)
+		return url, nil
+	}
+	log.Printf("[image-download] ok url=%s ct=%s size=%d", url[:80], ct, len(b64))
+	return "data:" + ct + ";base64," + b64, nil
 }

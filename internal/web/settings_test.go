@@ -26,6 +26,7 @@ func TestSettingsPersistAndValidate(t *testing.T) {
 	v.MaxToolRounds = 32
 	v.ChatTimeoutSeconds = 60
 	v.ImageTimeoutSeconds = 90
+	v.AccountCooldownMinutes = 35
 	if err := s.save(v); err != nil {
 		t.Fatal(err)
 	}
@@ -35,6 +36,22 @@ func TestSettingsPersistAndValidate(t *testing.T) {
 	v.MaxToolCallsPerTurn = 0
 	if err := s.save(v); err == nil {
 		t.Fatal("expected validation error")
+	}
+}
+
+func TestAccountCooldownSettings(t *testing.T) {
+	t.Setenv("M365_ACCOUNT_COOLDOWN_MINUTES", "")
+	v := defaultRuntimeSettings()
+	if v.AccountCooldownMinutes != 20 {
+		t.Fatalf("default cooldown=%d", v.AccountCooldownMinutes)
+	}
+	v.AccountCooldownMinutes = 0
+	if err := validateSettings(v); err == nil {
+		t.Fatal("accepted zero cooldown")
+	}
+	v.AccountCooldownMinutes = 1441
+	if err := validateSettings(v); err == nil {
+		t.Fatal("accepted cooldown over one day")
 	}
 }
 
