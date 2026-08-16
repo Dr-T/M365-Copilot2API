@@ -71,14 +71,6 @@ var gatewayModels = []modelSpec{
 	{ID: "gpt-image-2", Owner: "microsoft-365", DisplayName: "GPT Image 2"},
 	{ID: "claude-sonnet", Owner: "anthropic-via-microsoft-365", Tools: true},
 	{ID: "claude-sonnet-reasoning", Owner: "anthropic-via-microsoft-365", Tools: true},
-	{ID: "claude-opus-4-8", Owner: "anthropic-via-microsoft-365", Tools: true},
-	{ID: "claude-opus-4-8-reasoning", Owner: "anthropic-via-microsoft-365", Tools: true},
-	{ID: "claude-sonnet-4-6", Owner: "anthropic-via-microsoft-365", Tools: true},
-	{ID: "claude-sonnet-4-6-reasoning", Owner: "anthropic-via-microsoft-365", Tools: true},
-	{ID: "claude-opus-4-6", Owner: "anthropic-via-microsoft-365", Tools: true},
-	{ID: "claude-opus-4-6-reasoning", Owner: "anthropic-via-microsoft-365", Tools: true},
-	{ID: "claude-fable-5", Owner: "anthropic-via-microsoft-365", Tools: true},
-	{ID: "claude-fable-5-reasoning", Owner: "anthropic-via-microsoft-365", Tools: true},
 }
 
 func validUpstreamTone(tone string) bool {
@@ -91,7 +83,7 @@ func validUpstreamTone(tone string) bool {
 }
 
 func knownUpstreamTones() []string {
-	return []string{"Gpt_5_2_Chat", "Gpt_5_2_Reasoning", "Gpt_5_3_Chat", "Gpt_5_3_Reasoning", "Gpt_5_4_Chat", "Gpt_5_4_Reasoning", "Gpt_5_5_Chat", "Gpt_5_5_Reasoning", "Gpt_5_6_Reasoning", "Claude_Sonnet", "Claude_Sonnet_Reasoning", "Claude_Opus_4_8", "Claude_Opus_4_8_Reasoning", "Claude_Sonnet_4_6", "Claude_Sonnet_4_6_Reasoning", "Claude_Opus_4_6", "Claude_Opus_4_6_Reasoning", "Claude_Fable_5", "Claude_Fable_5_Reasoning"}
+	return []string{"Gpt_5_2_Chat", "Gpt_5_2_Reasoning", "Gpt_5_3_Chat", "Gpt_5_3_Reasoning", "Gpt_5_4_Chat", "Gpt_5_4_Reasoning", "Gpt_5_5_Chat", "Gpt_5_5_Reasoning", "Gpt_5_6_Reasoning", "Claude_Sonnet", "Claude_Sonnet_Reasoning"}
 }
 
 var (
@@ -251,14 +243,6 @@ func reasoningTone(model, effort string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(model)) {
 	case "claude", "claude-sonnet":
 		return "Claude_Sonnet_Reasoning", nil
-	case "claude-opus-4-8":
-		return "Claude_Opus_4_8_Reasoning", nil
-	case "claude-sonnet-4-6":
-		return "Claude_Sonnet_4_6_Reasoning", nil
-	case "claude-opus-4-6":
-		return "Claude_Opus_4_6_Reasoning", nil
-	case "claude-fable-5":
-		return "Claude_Fable_5_Reasoning", nil
 	case "gpt-5.2":
 		return "Gpt_5_2_Reasoning", nil
 	case "gpt-5.3":

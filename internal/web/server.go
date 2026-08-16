@@ -764,22 +764,6 @@ func modelTone(model string) string {
 		return "Claude_Sonnet"
 	case "claude-sonnet-reasoning":
 		return "Claude_Sonnet_Reasoning"
-	case "claude-opus-4-8":
-		return "Claude_Opus_4_8"
-	case "claude-opus-4-8-reasoning":
-		return "Claude_Opus_4_8_Reasoning"
-	case "claude-sonnet-4-6":
-		return "Claude_Sonnet_4_6"
-	case "claude-sonnet-4-6-reasoning":
-		return "Claude_Sonnet_4_6_Reasoning"
-	case "claude-opus-4-6":
-		return "Claude_Opus_4_6"
-	case "claude-opus-4-6-reasoning":
-		return "Claude_Opus_4_6_Reasoning"
-	case "claude-fable-5":
-		return "Claude_Fable_5"
-	case "claude-fable-5-reasoning":
-		return "Claude_Fable_5_Reasoning"
 	case "gpt-5.4-quick":
 		return "Gpt_5_4_Chat"
 	case "gpt-5.3-think-deeper":
