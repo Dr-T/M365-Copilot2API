@@ -193,13 +193,13 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		firstTurn = true
 	}
 	requestID := uuid.NewString()
-	if err := c.uploadAttachments(ctx, acc, req.ConversationID, req.Attachments); err != nil {
-		return Result{}, fmt.Errorf("upload attachment: %w", err)
-	}
-
 	wsURL, err := buildWSURL(acc, req.SessionID, req.ConversationID, requestID)
 	if err != nil {
 		return Result{}, err
+	}
+	attachCh := make(chan error, 1)
+	if len(req.Attachments) > 0 {
+		go func() { attachCh <- c.uploadAttachments(ctx, acc, req.ConversationID, req.Attachments) }()
 	}
 
 	dialStarted := time.Now()
@@ -217,6 +217,12 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		return Result{}, fmt.Errorf("ws dial: %w", err)
 	}
 	defer conn.Close()
+
+	if len(req.Attachments) > 0 {
+		if attachErr := <-attachCh; attachErr != nil {
+			return Result{}, fmt.Errorf("upload attachment: %w", attachErr)
+		}
+	}
 
 	_ = conn.SetReadDeadline(time.Now().Add(45 * time.Second))
 	_ = conn.SetWriteDeadline(time.Now().Add(15 * time.Second))

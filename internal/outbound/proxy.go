@@ -31,9 +31,24 @@ var (
 )
 
 func directClients() *Clients {
-	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.Proxy = nil
-	return &Clients{HTTP: &http.Client{Transport: t}, WebSocket: &websocket.Dialer{HandshakeTimeout: 20 * time.Second, ReadBufferSize: 1024 * 1024, WriteBufferSize: 64 * 1024}}
+	t := &http.Transport{
+		Proxy:                 nil,
+		DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ForceAttemptHTTP2:     true,
+	}
+	return &Clients{
+		HTTP: &http.Client{Transport: t},
+		WebSocket: &websocket.Dialer{
+			HandshakeTimeout: 20 * time.Second,
+			ReadBufferSize:   1024 * 1024,
+			WriteBufferSize:  64 * 1024,
+			NetDialContext:   t.DialContext,
+		},
+	}
 }
 func ConfigureFromEnv() error {
 	raw := strings.TrimSpace(os.Getenv("M365_PROXY_POOL"))
