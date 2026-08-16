@@ -41,14 +41,7 @@ func (p *ConnPool) Take(ctx context.Context, oid, tid string, wsURL string) (*we
 	if pc != nil {
 		delete(p.conns, p.key(oid, tid))
 		p.mu.Unlock()
-		if time.Since(pc.created) < 4*time.Minute {
-			if err := pc.conn.WriteMessage(websocket.TextMessage, []byte(`{"type":6}`+"\x1e")); err == nil {
-				return pc.conn, true, nil
-			}
-			pc.conn.Close()
-		} else {
-			pc.conn.Close()
-		}
+		pc.conn.Close()
 	} else {
 		p.mu.Unlock()
 	}
@@ -63,16 +56,9 @@ func (p *ConnPool) Take(ctx context.Context, oid, tid string, wsURL string) (*we
 }
 
 func (p *ConnPool) Return(oid, tid string, conn *websocket.Conn) {
-	if conn == nil {
-		return
+	if conn != nil {
+		conn.Close()
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	k := p.key(oid, tid)
-	if old, ok := p.conns[k]; ok {
-		old.conn.Close()
-	}
-	p.conns[k] = &pooledConn{conn: conn, created: time.Now()}
 }
 
 func (p *ConnPool) Discard(oid, tid string, conn *websocket.Conn) {
