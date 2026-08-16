@@ -200,8 +200,9 @@ python manage.py stop     # 停止服务
 | `M365_PROXY_POOL` | 空 | 代理列表（逗号或换行分隔，支持 http / https / socks5） |
 | `M365_PROXY_INSECURE_TLS` | — | 信任自签代理证书（`1` / `true`） |
 | `M365_PROXY_HEALTH_URL` | 默认探测地址 | 代理健康检查目标 |
-| `M365_CLIENT_ID` | 内置 | Azure 应用 Client ID |
-| `M365_AUTHORITY` / `M365_REDIRECT_URI` / `M365_SCOPE` | 内置 | OAuth 端点自定义覆盖 |
+| `M365_BROWSER_CLIENT_ID` / `M365_BROWSER_AUTHORITY` / `M365_BROWSER_REDIRECT_URI` / `M365_BROWSER_SCOPE` | 内置 | 浏览器 PKCE 的 OAuth 配置 |
+| `M365_DEVICE_CLIENT_ID` / `M365_DEVICE_AUTHORITY` / `M365_DEVICE_SCOPE` | 内置 | Device Code 的 OAuth 配置 |
+| `M365_CLIENT_ID` / `M365_AUTHORITY` / `M365_REDIRECT_URI` / `M365_SCOPE` | 内置 | 兼容旧配置；流程专用变量未设置时作为回退 |
 
 ### 数据文件
 
