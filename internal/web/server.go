@@ -1959,7 +1959,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	}
 	if len(toolMaps) > 0 && isSandboxHallucination(res.Text) {
 		log.Printf("[sandbox-eject] model used code interpreter/sandbox, retrying with explicit tool instruction")
-		correction := "CRITICAL: You must NOT use any built-in code interpreter, Python sandbox, or cloud execution environment. The caller has provided a bash tool that runs Windows PowerShell 5.1 on their local machine — use it to execute any commands or code. Do NOT say you cannot run code. Do NOT say you only have a Linux container. Call the bash tool NOW with the appropriate command.\n\nUser request:\n" + prompt
+		correction := "CRITICAL: You must NOT use any built-in code interpreter, Python sandbox, or cloud execution environment. The caller has provided a bash tool that runs Windows PowerShell 5.1 on their local machine — use it to execute any commands or code. Do NOT say you cannot run code. Do NOT say you only have a Linux container. Do NOT say you have no Windows execution channel. You DO have a bash tool that runs on Windows. Call the bash tool NOW with the appropriate PowerShell command.\n\nUser request:\n" + prompt
 		res2, err2 := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: correction, Tone: tone, Attachments: body.Attachments})
 		if err2 == nil && !isSandboxHallucination(res2.Text) {
 			res = res2
