@@ -122,6 +122,7 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 .status i{width:6px;height:6px;border-radius:50%;background:currentColor}
 .status.online{color:var(--green)}
 .status.offline{color:var(--muted)}
+.status.cooldown{color:#d97706}
 .status.warn{color:#d97706}
 
 /* Empty */
@@ -531,11 +532,12 @@ if (response.output_text) {
               <div class="seg" id="accountFilter">
                 <button data-f="all" class="active" onclick="setAccountFilter('all')">All</button>
                 <button data-f="online" onclick="setAccountFilter('online')">Online</button>
+                <button data-f="cooldown" onclick="setAccountFilter('cooldown')">Cooldown</button>
                 <button data-f="offline" onclick="setAccountFilter('offline')">Offline</button>
               </div>
             </div>
           </div>
-          <table class="table"><thead><tr><th>Account</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead><tbody id="accountRows"><tr><td colspan="4" class="empty">Loading...</td></tr></tbody></table>
+          <table class="table"><thead><tr><th>Account</th><th>Calls</th><th>Status</th><th>Updated</th><th>Scheduling</th><th>Actions</th></tr></thead><tbody id="accountRows"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody></table>
         </div>
       </section>
 
@@ -740,6 +742,9 @@ const localeText={
   'Endpoint': {'zh-CN':'端点','zh-TW':'端點','ja':'エンドポイント','ko':'엔드포인트','es':'Punto final','fr':'Point d\'entrée','de':'Endpunkt','pt-BR':'Endpoint','ru':'Конечная точка','ar':'نقطة النهاية'},
   'Tokens': {'zh-CN':'Tokens','zh-TW':'Tokens','ja':'トークン','ko':'토큰','es':'Tokens','fr':'Tokens','de':'Tokens','pt-BR':'Tokens','ru':'Токены','ar':'الرموز'},
   'Status': {'zh-CN':'状态','zh-TW':'狀態','ja':'ステータス','ko':'상태','es':'Estado','fr':'Statut','de':'Status','pt-BR':'Status','ru':'Статус','ar':'الحالة'},
+  'Calls': {'zh-CN':'调用次数','zh-TW':'呼叫次數','ja':'呼び出し回数','ko':'호출 횟수','es':'Llamadas','fr':'Appels','de':'Aufrufe','pt-BR':'Chamadas','ru':'Вызовы','ar':'الاستدعاءات'},
+  'Scheduling': {'zh-CN':'调度','zh-TW':'調度','ja':'スケジュール','ko':'스케줄링','es':'Programación','fr':'Planification','de':'Planung','pt-BR':'Agendamento','ru':'Планирование','ar':'الجدولة'},
+  'Enabled': {'zh-CN':'已启用','zh-TW':'已啟用','ja':'有効','ko':'활성화됨','es':'Habilitado','fr':'Activé','de':'Aktiviert','pt-BR':'Ativado','ru':'Включено','ar':'مفعّل'},
   'Loading...': {'zh-CN':'加载中...','zh-TW':'載入中...','ja':'読み込み中...','ko':'로딩 중...','es':'Cargando...','fr':'Chargement...','de':'Wird geladen...','pt-BR':'Carregando...','ru':'Загрузка...','ar':'جارٍ التحميل...'},
   'Token usage statistics and request details': {'zh-CN':'Token 用量统计与请求明细','zh-TW':'Token 用量統計與要求明細','ja':'トークン使用量の統計とリクエスト詳細','ko':'토큰 사용 통계 및 요청 상세','es':'Estadísticas de uso de tokens y detalles de solicitudes','fr':'Statistiques d\'utilisation des tokens et détails des requêtes','de':'Token-Nutzungsstatistik und Anfragedetails','pt-BR':'Estatísticas de uso de tokens e detalhes de solicitações','ru':'Статистика использования токенов и детали запросов','ar':'إحصائيات استخدام الرموز وتفاصيل الطلبات'},
   '7 days': {'zh-CN':'7天','zh-TW':'7天','ja':'7日','ko':'7일','es':'7 días','fr':'7 jours','de':'7 Tage','pt-BR':'7 dias','ru':'7 дней','ar':'7 أيام'},
@@ -783,6 +788,7 @@ const localeText={
   'Authorized accounts': {'zh-CN':'已授权账号','zh-TW':'已授權帳號','ja':'承認済みアカウント','ko':'인증된 계정','es':'Cuentas autorizadas','fr':'Comptes autorisés','de':'Autorisierte Konten','pt-BR':'Contas autorizadas','ru':'Авторизованные аккаунты','ar':'الحسابات المفوضة'},
   'Search accounts…': {'zh-CN':'搜索账号…','zh-TW':'搜尋帳號…','ja':'アカウントを検索…','ko':'계정 검색…','es':'Buscar cuentas…','fr':'Rechercher des comptes…','de':'Konten suchen…','pt-BR':'Pesquisar contas…','ru':'Поиск аккаунтов…','ar':'البحث عن الحسابات…'},
   'All': {'zh-CN':'全部','zh-TW':'全部','ja':'すべて','ko':'전체','es':'Todos','fr':'Tous','de':'Alle','pt-BR':'Todos','ru':'Все','ar':'الكل'},
+  'Cooldown': {'zh-CN':'冷却','zh-TW':'冷卻','ja':'クールダウン','ko':'쿨다운','es':'Enfriamiento','fr':'Refroidissement','de':'Abkühlung','pt-BR':'Resfriamento','ru':'Ожидание','ar':'التهدئة'},
   'Offline': {'zh-CN':'离线','zh-TW':'離線','ja':'オフライン','ko':'오프라인','es':'Sin conexión','fr':'Hors ligne','de':'Offline','pt-BR':'Offline','ru':'Не в сети','ar':'غير متصل'},
   'Updated': {'zh-CN':'更新时间','zh-TW':'更新時間','ja':'更新日時','ko':'업데이트 시간','es':'Actualizado','fr':'Mis à jour','de':'Aktualisiert','pt-BR':'Atualizado','ru':'Обновлено','ar':'تم التحديث'},
   'Actions': {'zh-CN':'操作','zh-TW':'操作','ja':'操作','ko':'작업','es':'Acciones','fr':'Actions','de':'Aktionen','pt-BR':'Ações','ru':'Действия','ar':'الإجراءات'},
@@ -871,7 +877,9 @@ const localeTextReverse=localeReverse();
 function translateDynamic(value,locale){
   if(!value)return value;
   if(locale==='zh'||locale.startsWith('zh')){
-    let m=value.match(/^(\d+) requests today$/);if(m)return '今日 '+m[1]+' 次请求';
+    let m=value.match(/^Called (\d+) times$/);if(m)return locale==='zh-TW'?'已呼叫'+m[1]+'次':'已调用'+m[1]+'次';
+    m=value.match(/^Limited after (\d+) calls$/);if(m)return locale==='zh-TW'?'呼叫'+m[1]+'次限流':'调用'+m[1]+'次限流';
+    m=value.match(/^(\d+) requests today$/);if(m)return '今日 '+m[1]+' 次请求';
     m=value.match(/^(\d+) requests$/);if(m)return m[1]+' 次请求';
     m=value.match(/^Hit rate (.+)$/);if(m)return '命中率 '+m[1];
     m=value.match(/^Today \+(\d+)$/);if(m)return '今日 +'+m[1];
@@ -882,7 +890,11 @@ function translateDynamic(value,locale){
     m=value.match(/^Connection healthy: (.+)$/);if(m)return '连通正常：'+m[1];
     m=value.match(/^Finished: (\d+) succeeded, (\d+) failed, (\d+) rounds total\.$/);if(m)return '完成：成功 '+m[1]+' 个，失败 '+m[2]+' 个，共 '+m[3]+' 轮。';
   }else{
-    let m=value.match(/^今日 (\d+) 次请求$/);if(m)return m[1]+' requests today';
+    let m=value.match(/^已调用(\d+)次$/);if(m)return 'Called '+m[1]+' times';
+    m=value.match(/^已呼叫(\d+)次$/);if(m)return 'Called '+m[1]+' times';
+    m=value.match(/^调用(\d+)次限流$/);if(m)return 'Limited after '+m[1]+' calls';
+    m=value.match(/^呼叫(\d+)次限流$/);if(m)return 'Limited after '+m[1]+' calls';
+    m=value.match(/^今日 (\d+) 次请求$/);if(m)return m[1]+' requests today';
     m=value.match(/^(\d+) 次请求$/);if(m)return m[1]+' requests';
     m=value.match(/^命中率 (.+)$/);if(m)return 'Hit rate '+m[1];
     m=value.match(/^今日 \+(\d+)$/);if(m)return 'Today +'+m[1];
@@ -955,6 +967,7 @@ function showPage(p){
   if(p==='conversations')loadConversations();
   if(p==='proxies')loadProxies();
   if(p==='modeltest')loadModelTest();
+  if(p==='settings')loadSettings();
 }
 
 let onboardingHidden=false;
@@ -1056,18 +1069,34 @@ function renderAccounts(){
   const q=($('accountSearch').value||'').trim().toLowerCase();
   const list=_accountsCache.filter(x=>{
     if(_accountFilter==='online'&&x.status!=='online')return false;
-    if(_accountFilter==='offline'&&x.status==='online')return false;
+    if(_accountFilter==='cooldown'&&x.status!=='cooldown')return false;
+    if(_accountFilter==='offline'&&(x.status==='online'||x.status==='cooldown'))return false;
     if(q&&!((x.displayName||'')+' '+(x.email||'')).toLowerCase().includes(q))return false;
     return true;
   });
-  $('accountRows').innerHTML=list.length?list.map(x=>`<tr><td><div class="account-cell"><div class="avatar">${(x.displayName||x.email||'M')[0]}</div><div><b>${x.displayName||x.email}</b><div style="font-size:11px;color:var(--muted)">${x.email||''}</div></div></div></td><td><span class="status ${x.status==='online'?'online':'offline'}"><i></i>${x.status==='online'?'Online':'Offline'}</span></td><td style="font-size:12px;color:var(--muted)">${x.updatedAt?new Date(x.updatedAt).toLocaleString():'-'}</td><td><button class="btn-sm btn danger" onclick="deleteAccount('${x.id}')">Delete</button></td></tr>`).join(''):'<tr><td colspan="4" class="empty">No matching accounts</td></tr>';
+  $('accountRows').innerHTML=list.length?list.map(x=>{
+    const cooldown=x.cooldownUntil?`<div style="font-size:11px;color:var(--muted);margin-top:3px"><span>Cooldown until</span> ${new Date(x.cooldownUntil).toLocaleString()}</div>`:'';
+    const status=x.status==='cooldown'?`<div><span class="status cooldown"><i></i>Cooldown</span>${cooldown}</div>`:x.status==='online'?'<span class="status online"><i></i>Online</span>':'<span class="status offline"><i></i>Offline</span>';
+    const calls=x.rateLimited?`Limited after ${x.callCount||0} calls`:`Called ${x.callCount||0} times`;
+    const scheduleEnabled=x.scheduleEnabled!==false;
+    return `<tr><td><div class="account-cell"><div class="avatar">${(x.displayName||x.email||'M')[0]}</div><div><b>${x.displayName||x.email}</b><div style="font-size:11px;color:var(--muted)">${x.email||''}</div></div></div></td><td style="font-size:12px;white-space:nowrap">${calls}</td><td>${status}</td><td style="font-size:12px;color:var(--muted)">${x.updatedAt?new Date(x.updatedAt).toLocaleString():'-'}</td><td><button class="btn-sm btn${scheduleEnabled?'':' danger'}" onclick="toggleAccountSchedule('${x.id}',${!scheduleEnabled})">${scheduleEnabled?'Enabled':'Disabled'}</button></td><td><button class="btn-sm btn danger" onclick="deleteAccount('${x.id}')">Delete</button></td></tr>`;
+  }).join(''):'<tr><td colspan="6" class="empty">No matching accounts</td></tr>';
 }
 async function loadAccounts(){
   try{
     const d=await api('/api/accounts');
     _accountsCache=d.accounts||[];
     renderAccounts();
-  }catch(e){$('accountRows').innerHTML=`<tr><td colspan="4" class="empty">${e.message}</td></tr>`;}
+  }catch(e){$('accountRows').innerHTML=`<tr><td colspan="6" class="empty">${e.message}</td></tr>`;}
+}
+
+async function toggleAccountSchedule(id,enabled){
+  try{
+    await api('/api/accounts/schedule',{method:'POST',body:JSON.stringify({id,enabled})});
+    const account=_accountsCache.find(x=>x.id===id);
+    if(account)account.scheduleEnabled=enabled;
+    renderAccounts();
+  }catch(e){showNotice(e.message,'error');}
 }
 
 async function deleteAccount(id){
@@ -1545,16 +1574,27 @@ async function modelTestAll(){
   showNotice('模型测试完成','success');
 }
 
-async function saveSettings(){  try{
+async function loadSettings(){
+  try{
+    const d=await api('/api/admin/settings');
+    const v=d.settings||{};
+    $('setListen').value=v.listenAddress||'';
+    $('setTimeout').value=v.chatTimeoutSeconds||120;
+  }catch(e){showNotice(e.message,'error');}
+}
+async function saveSettings(){
+  try{
     const listen=$('setListen').value.trim();
     const timeout=$('setTimeout').value.trim();
     const body={};
-    if(listen)body.listen=listen;
+    if(listen)body.listenAddress=listen;
     if(timeout)body.chatTimeoutSeconds=parseInt(timeout);
     await api('/api/admin/settings',{method:'PUT',body:JSON.stringify(body)});
     showNotice('设置已保存','success');
   }catch(e){showNotice(e.message,'error');}
 }
+
+setInterval(()=>{if($('page-accounts').style.display!=='none')loadAccounts();},15000);
 
 // Init
 try{lucide.createIcons();}catch(e){}

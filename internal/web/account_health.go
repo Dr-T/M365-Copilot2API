@@ -1,4 +1,4 @@
-﻿package web
+package web
 
 import (
 	"errors"
@@ -35,7 +35,12 @@ func IsRateLimited(err error) bool {
 	}
 	var httpErr *UpstreamHTTPError
 	if errors.As(err, &httpErr) {
-		return httpErr.Status == 429 || httpErr.Status == 503
+		if httpErr.Status == 429 || httpErr.Status == 503 {
+			return true
+		}
+		if strings.Contains(strings.ToLower(httpErr.Body), "limited") {
+			return true
+		}
 	}
 	var dialErr *chathub.DialError
 	if errors.As(err, &dialErr) {
@@ -45,6 +50,7 @@ func IsRateLimited(err error) bool {
 	return strings.Contains(msg, "429") ||
 		strings.Contains(msg, "too many requests") ||
 		strings.Contains(msg, "rate limit") ||
+		strings.Contains(msg, "limited") ||
 		strings.Contains(msg, "throttl")
 }
 
@@ -91,16 +97,57 @@ type accountHealth struct {
 	mu       sync.Mutex
 	cooldown map[string]time.Time
 	authFail map[string]bool
+	limited  map[string]bool
+	calls    map[string]uint64
 }
 
 func newAccountHealth() *accountHealth {
-	return &accountHealth{cooldown: map[string]time.Time{}, authFail: map[string]bool{}}
+	return &accountHealth{cooldown: map[string]time.Time{}, authFail: map[string]bool{}, limited: map[string]bool{}, calls: map[string]uint64{}}
 }
 
-// MarkFailure records the outcome of a request for one account.
-// rateLimited cools the account down for window; authFailed pins it.
-// When the error carries an upstream Retry-After hint, that value is used
-// instead of the caller-supplied window (capped at 30 minutes).
+func (h *accountHealth) cleanupExpiredCooldownLocked(accountID string) {
+	until, ok := h.cooldown[accountID]
+	if !ok || time.Now().Before(until) {
+		return
+	}
+	rateLimited := h.limited[accountID]
+	delete(h.cooldown, accountID)
+	delete(h.limited, accountID)
+	if rateLimited {
+		delete(h.calls, accountID)
+	}
+}
+
+func (h *accountHealth) MarkCall(accountID string) {
+	if h == nil || accountID == "" {
+		return
+	}
+	h.mu.Lock()
+	h.cleanupExpiredCooldownLocked(accountID)
+	h.calls[accountID]++
+	h.mu.Unlock()
+}
+
+func (h *accountHealth) CallCount(accountID string) uint64 {
+	if h == nil {
+		return 0
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cleanupExpiredCooldownLocked(accountID)
+	return h.calls[accountID]
+}
+
+func (h *accountHealth) RateLimited(accountID string) bool {
+	if h == nil {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cleanupExpiredCooldownLocked(accountID)
+	return h.limited[accountID]
+}
+
 func (h *accountHealth) MarkFailure(accountID string, err error, window time.Duration) {
 	if window <= 0 {
 		window = 60 * time.Second
@@ -114,10 +161,12 @@ func (h *accountHealth) MarkFailure(accountID string, err error, window time.Dur
 		}
 		h.cooldown[accountID] = time.Now().Add(cooldown)
 		delete(h.authFail, accountID)
+		delete(h.limited, accountID)
 		return
 	}
 	if IsRateLimited(err) {
 		delete(h.authFail, accountID)
+		h.limited[accountID] = true
 		cd := window
 		if ra := RetryAfterSeconds(err); ra > 0 {
 			cd = time.Duration(ra) * time.Second
@@ -135,6 +184,7 @@ func (h *accountHealth) MarkSuccess(accountID string) {
 	defer h.mu.Unlock()
 	delete(h.cooldown, accountID)
 	delete(h.authFail, accountID)
+	delete(h.limited, accountID)
 }
 
 // Available reports whether the account may be used right now.
@@ -144,10 +194,25 @@ func (h *accountHealth) Available(accountID string) bool {
 	if h.authFail[accountID] {
 		return false
 	}
+	h.cleanupExpiredCooldownLocked(accountID)
 	if until, ok := h.cooldown[accountID]; ok && time.Now().Before(until) {
 		return false
 	}
 	return true
+}
+
+func (h *accountHealth) CooldownUntil(accountID string) (time.Time, bool) {
+	if h == nil {
+		return time.Time{}, false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cleanupExpiredCooldownLocked(accountID)
+	until, ok := h.cooldown[accountID]
+	if !ok {
+		return time.Time{}, false
+	}
+	return until, true
 }
 
 // Snapshot returns a copy of the current health state for the admin UI.
@@ -174,6 +239,8 @@ func (h *accountHealth) ClearAllCooldowns() {
 	defer h.mu.Unlock()
 	h.cooldown = map[string]time.Time{}
 	h.authFail = map[string]bool{}
+	h.limited = map[string]bool{}
+	h.calls = map[string]uint64{}
 }
 
 // EarliestRecovery returns the earliest time at which any account may become

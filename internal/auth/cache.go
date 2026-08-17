@@ -11,17 +11,18 @@ import (
 )
 
 type AccountToken struct {
-	ID           string    `json:"id"`
-	Email        string    `json:"email"`
-	DisplayName  string    `json:"displayName,omitempty"`
-	Status       string    `json:"status"`
-	AccessToken  string    `json:"accessToken"`
-	RefreshToken string    `json:"refreshToken,omitempty"`
-	ExpiresAt    time.Time `json:"expiresAt"`
-	UpdatedAt    time.Time `json:"updatedAt"`
-	OID          string    `json:"oid,omitempty"`
-	TID          string    `json:"tid,omitempty"`
-	ClientID     string    `json:"clientId,omitempty"`
+	ID               string    `json:"id"`
+	Email            string    `json:"email"`
+	DisplayName      string    `json:"displayName,omitempty"`
+	Status           string    `json:"status"`
+	ScheduleDisabled bool      `json:"scheduleDisabled,omitempty"`
+	AccessToken      string    `json:"accessToken"`
+	RefreshToken     string    `json:"refreshToken,omitempty"`
+	ExpiresAt        time.Time `json:"expiresAt"`
+	UpdatedAt        time.Time `json:"updatedAt"`
+	OID              string    `json:"oid,omitempty"`
+	TID              string    `json:"tid,omitempty"`
+	ClientID         string    `json:"clientId,omitempty"`
 }
 
 type Cache struct {
@@ -127,6 +128,30 @@ func (s *Store) List() []AccountToken {
 	return out
 }
 
+func (s *Store) SetScheduleEnabled(id string, enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.data.Accounts {
+		if s.data.Accounts[i].ID == id {
+			s.data.Accounts[i].ScheduleDisabled = !enabled
+			s.data.Accounts[i].UpdatedAt = time.Now()
+			return s.saveLocked()
+		}
+	}
+	return errors.New("account not found")
+}
+
+func (s *Store) ScheduleEnabled(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, account := range s.data.Accounts {
+		if account.ID == id {
+			return !account.ScheduleDisabled
+		}
+	}
+	return false
+}
+
 func (s *Store) UpdateRefreshToken(id, refreshToken string) error {
 	refreshToken = strings.TrimSpace(refreshToken)
 	if refreshToken == "" {
@@ -179,6 +204,7 @@ func (s *Store) Upsert(tok TokenSet) (AccountToken, error) {
 			if acc.OID == "" {
 				acc.OID = existing.OID
 			}
+			acc.ScheduleDisabled = existing.ScheduleDisabled
 			s.data.Accounts[i] = acc
 			found = true
 			break

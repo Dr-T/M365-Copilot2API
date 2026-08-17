@@ -33,13 +33,22 @@ type pendingPKCE struct {
 	RedirectURI string
 }
 
-// rateLimitCooldown is how long a rate-limited account stays out of rotation.
 const rateLimitCooldown = 30 * time.Second
 
-// maxAccountProbe bounds the round-robin walk when skipping unhealthy accounts.
 const maxAccountProbe = 16
 
 const rateLimitProbePrompt = "Reply with exactly: OK"
+
+func (s *Server) markAccountResult(accountID string, err error) {
+	if s == nil || s.accountPool == nil || accountID == "" {
+		return
+	}
+	if err != nil {
+		s.accountPool.MarkFailure(accountID, err, rateLimitCooldown)
+		return
+	}
+	s.accountPool.MarkSuccess(accountID)
+}
 
 // confirmRateLimitNotice verifies a text-channel rate-limit notice with a
 // separate, fresh ChatHub conversation. A single notice is not enough to cool
@@ -204,6 +213,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/update", s.update)
 	m.HandleFunc("/api/accounts", s.accounts)
 	m.HandleFunc("/api/accounts/refresh", s.refreshAccount)
+	m.HandleFunc("/api/accounts/schedule", s.scheduleAccount)
 	m.HandleFunc("/api/accounts/token-health", s.tokenHealth)
 	m.HandleFunc("/api/accounts/clear-cooldown", s.clearCooldown)
 	m.HandleFunc("/api/accounts/delete", s.deleteAccount)
@@ -477,20 +487,37 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 	}
 	list := s.tokens.List()
 	type view struct {
-		ID          string    `json:"id"`
-		Email       string    `json:"email"`
-		DisplayName string    `json:"displayName,omitempty"`
-		Status      string    `json:"status"`
-		OID         string    `json:"oid,omitempty"`
-		TID         string    `json:"tid,omitempty"`
-		ExpiresAt   time.Time `json:"expiresAt,omitempty"`
-		UpdatedAt   time.Time `json:"updatedAt,omitempty"`
+		ID              string     `json:"id"`
+		Email           string     `json:"email"`
+		DisplayName     string     `json:"displayName,omitempty"`
+		Status          string     `json:"status"`
+		ScheduleEnabled bool       `json:"scheduleEnabled"`
+		CallCount       uint64     `json:"callCount"`
+		RateLimited     bool       `json:"rateLimited"`
+		CooldownUntil   *time.Time `json:"cooldownUntil,omitempty"`
+		OID             string     `json:"oid,omitempty"`
+		TID             string     `json:"tid,omitempty"`
+		ExpiresAt       time.Time  `json:"expiresAt,omitempty"`
+		UpdatedAt       time.Time  `json:"updatedAt,omitempty"`
 	}
 	out := make([]view, 0, len(list))
 	for _, a := range list {
+		status := a.Status
+		var cooldownUntil *time.Time
+		var callCount uint64
+		var rateLimited bool
+		if s.accountPool != nil {
+			if until, ok := s.accountPool.CooldownUntil(a.ID); ok {
+				status = "cooldown"
+				cooldownUntil = &until
+			}
+			callCount = s.accountPool.CallCount(a.ID)
+			rateLimited = s.accountPool.RateLimited(a.ID)
+		}
 		out = append(out, view{
 			ID: a.ID, Email: a.Email, DisplayName: a.DisplayName,
-			Status: a.Status, OID: a.OID, TID: a.TID,
+			Status: status, ScheduleEnabled: !a.ScheduleDisabled, CallCount: callCount, RateLimited: rateLimited,
+			CooldownUntil: cooldownUntil, OID: a.OID, TID: a.TID,
 			ExpiresAt: a.ExpiresAt, UpdatedAt: a.UpdatedAt,
 		})
 	}
@@ -518,6 +545,26 @@ func (s *Server) refreshAccount(w http.ResponseWriter, r *http.Request) {
 		"id": acc.ID, "email": acc.Email, "displayName": acc.DisplayName,
 		"status": acc.Status, "expiresAt": acc.ExpiresAt, "updatedAt": acc.UpdatedAt,
 	}})
+}
+
+func (s *Server) scheduleAccount(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		ID      string `json:"id"`
+		Enabled bool   `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.ID) == "" {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if err := s.tokens.SetScheduleEnabled(strings.TrimSpace(body.ID), body.Enabled); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	jsonOut(w, map[string]any{"status": "updated", "scheduleEnabled": body.Enabled})
 }
 
 func (s *Server) tokenHealth(w http.ResponseWriter, r *http.Request) {
@@ -782,6 +829,9 @@ func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {
 				break
 			}
 			accountID = acc.ID
+		}
+		if !s.tokens.ScheduleEnabled(accountID) {
+			return auth.AccountToken{}, fmt.Errorf("no accounts enabled for scheduling")
 		}
 		if !s.accountPool.Available(accountID) {
 			until := s.accountPool.EarliestRecovery()
@@ -1577,7 +1627,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			// to exactly one of the tools the client actually declared.
 			repairPrompt := modelToolRouterPrompt(prompt+"\n"+ledger.RouterContext(), toolMaps, "required") +
 				"\nREPAIR RULE: The previous upstream event selected an undeclared tool. Select one declared tool that performs the intended operation. Never return unknown_tool."
-			repairRes, repairErr := s.chat.Chat(ctx, account, chathub.Request{Text: repairPrompt, Tone: tone, Attachments: body.Attachments})
+			repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: repairPrompt, Tone: tone, Attachments: body.Attachments})
 			if repairErr == nil {
 				repaired, parsed := parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
 				if parsed {
@@ -1595,7 +1645,13 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if len(calls) > 0 {
-			log.Printf("[req-trace] id=%s stage=tool_calls_detected count=%d names=%v", requestID, len(calls), func() []string { var n []string; for _, c := range calls { n = append(n, c.Name) }; return n }())
+			log.Printf("[req-trace] id=%s stage=tool_calls_detected count=%d names=%v", requestID, len(calls), func() []string {
+				var n []string
+				for _, c := range calls {
+					n = append(n, c.Name)
+				}
+				return n
+			}())
 			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
 			_ = writeToolResponse(w, id, model, true, calls, toolResult)
 			if body.User != "" && res.ConversationID != "" {
@@ -1904,7 +1960,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	if len(toolMaps) > 0 && isSandboxHallucination(res.Text) {
 		log.Printf("[sandbox-eject] model used code interpreter/sandbox, retrying with explicit tool instruction")
 		correction := "CRITICAL: You must NOT use any built-in code interpreter, Python sandbox, or cloud execution environment. The caller has provided a bash tool that runs Windows PowerShell 5.1 on their local machine — use it to execute any commands or code. Do NOT say you cannot run code. Do NOT say you only have a Linux container. Call the bash tool NOW with the appropriate command.\n\nUser request:\n" + prompt
-		res2, err2 := s.chat.Chat(ctx, account, chathub.Request{Text: correction, Tone: tone, Attachments: body.Attachments})
+		res2, err2 := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: correction, Tone: tone, Attachments: body.Attachments})
 		if err2 == nil && !isSandboxHallucination(res2.Text) {
 			res = res2
 		}
