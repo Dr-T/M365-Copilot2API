@@ -197,7 +197,8 @@ func (c *M365CloudClient) ListConversations() ([]map[string]any, error) {
 
 	historyList, ok := store["conversationPageHistoryList"].(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf("no conversationPageHistoryList")
+		log.Printf("[m365-cloud] conversationPageHistoryList missing from store, returning empty list. store keys: %v", func() []string { keys := make([]string, 0); for k := range store { keys = append(keys, k) }; return keys }())
+		return []map[string]any{}, nil
 	}
 
 	chatsRaw, ok := historyList["chats"].([]any)
