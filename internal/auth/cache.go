@@ -23,6 +23,7 @@ type AccountToken struct {
 	OID              string    `json:"oid,omitempty"`
 	TID              string    `json:"tid,omitempty"`
 	ClientID         string    `json:"clientId,omitempty"`
+	BoundProxy       string    `json:"boundProxy,omitempty"`
 }
 
 type Cache struct {
@@ -205,6 +206,9 @@ func (s *Store) Upsert(tok TokenSet) (AccountToken, error) {
 				acc.OID = existing.OID
 			}
 			acc.ScheduleDisabled = existing.ScheduleDisabled
+			if acc.BoundProxy == "" {
+				acc.BoundProxy = existing.BoundProxy
+			}
 			s.data.Accounts[i] = acc
 			found = true
 			break
@@ -227,6 +231,19 @@ func (s *Store) Delete(id string) error {
 	}
 	s.data.Accounts = next
 	return s.saveLocked()
+}
+
+func (s *Store) SetBoundProxy(id, proxyURL string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.data.Accounts {
+		if s.data.Accounts[i].ID == id {
+			s.data.Accounts[i].BoundProxy = proxyURL
+			s.data.Accounts[i].UpdatedAt = time.Now()
+			return s.saveLocked()
+		}
+	}
+	return errors.New("account not found")
 }
 
 func (s *Store) Get(id string) (AccountToken, bool) {
