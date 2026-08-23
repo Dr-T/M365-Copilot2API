@@ -239,7 +239,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		firstTurn = true
 	}
 	requestID := uuid.NewString()
-	wsURL, err := buildWSURL(acc, req.SessionID, req.ConversationID, requestID, req.LicenseType, req.Scenario)
+	wsURL, err := BuildWSURL(acc, req.SessionID, req.ConversationID, requestID, req.LicenseType, req.Scenario)
 	if err != nil {
 		return Result{}, err
 	}
@@ -265,7 +265,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 				warmReqID := uuid.NewString()
 				warmSID := uuid.NewString()
 				warmCID := uuid.NewString()
-				warmURL, _ := buildWSURL(acc, warmSID, warmCID, warmReqID, req.LicenseType, req.Scenario)
+				warmURL, _ := BuildWSURL(acc, warmSID, warmCID, warmReqID, req.LicenseType, req.Scenario)
 				c.Pool.Warm(warmCtx, acc, warmURL)
 			}()
 		}
@@ -673,7 +673,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 						warmReqID := uuid.NewString()
 						warmSID := uuid.NewString()
 						warmCID := uuid.NewString()
-						warmURL, _ := buildWSURL(acc, warmSID, warmCID, warmReqID, req.LicenseType, req.Scenario)
+						warmURL, _ := BuildWSURL(acc, warmSID, warmCID, warmReqID, req.LicenseType, req.Scenario)
 						c.Pool.Warm(warmCtx, acc, warmURL)
 					}()
 				}
@@ -689,7 +689,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	return Result{}, fmt.Errorf("chathub response deadline exceeded before completion")
 }
 
-func buildWSURL(acc Account, sessionID, conversationID, requestID, licenseType, scenario string) (string, error) {
+func BuildWSURL(acc Account, sessionID, conversationID, requestID, licenseType, scenario string) (string, error) {
 	q := url.Values{}
 	q.Set("chatsessionid", requestID)
 	q.Set("clientrequestid", requestID)

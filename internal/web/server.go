@@ -239,6 +239,35 @@ func (s *Server) StartConvCacheGC() {
 	}()
 }
 
+func (s *Server) PreheatPool() {
+	if s.chat == nil || s.chat.Pool == nil {
+		return
+	}
+	accounts := s.tokens.List()
+	cfg := s.settings.get()
+	for _, acc := range accounts {
+		if acc.OID == "" || acc.TID == "" {
+			oid, tid := extractOIDTID(acc.AccessToken)
+			acc.OID, acc.TID = oid, tid
+		}
+		if acc.OID == "" {
+			continue
+		}
+		go func(a auth.AccountToken) {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			reqID := uuid.NewString()
+			sid := uuid.NewString()
+			cid := uuid.NewString()
+			wsURL, err := chathub.BuildWSURL(chathub.Account{AccessToken: a.AccessToken, OID: a.OID, TID: a.TID}, sid, cid, reqID, cfg.LicenseType, cfg.Scenario)
+			if err != nil {
+				return
+			}
+			s.chat.Pool.Warm(ctx, chathub.Account{AccessToken: a.AccessToken, OID: a.OID, TID: a.TID}, wsURL)
+		}(acc)
+	}
+}
+
 func (s *Server) InitM365CloudClient() {
 	accounts := s.tokens.List()
 	if len(accounts) == 0 {
