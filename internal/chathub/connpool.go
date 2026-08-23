@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -43,10 +44,12 @@ func (p *ConnPool) Take(ctx context.Context, oid, tid string, wsURL string) (*we
 	if pc != nil {
 		delete(p.conns, p.key(oid, tid))
 		p.mu.Unlock()
+		if time.Since(pc.created) < 5*time.Minute {
+			return pc.conn, true, nil
+		}
 		pc.conn.Close()
-	} else {
-		p.mu.Unlock()
 	}
+	p.mu.Unlock()
 	conn, resp, err := p.dialer.DialContext(ctx, wsURL, p.header.Clone())
 	if err != nil {
 		if resp != nil {
@@ -58,9 +61,16 @@ func (p *ConnPool) Take(ctx context.Context, oid, tid string, wsURL string) (*we
 }
 
 func (p *ConnPool) Return(oid, tid string, conn *websocket.Conn) {
-	if conn != nil {
-		conn.Close()
+	if conn == nil {
+		return
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	k := p.key(oid, tid)
+	if existing := p.conns[k]; existing != nil {
+		existing.conn.Close()
+	}
+	p.conns[k] = &pooledConn{conn: conn, created: time.Now()}
 }
 
 func (p *ConnPool) Discard(oid, tid string, conn *websocket.Conn) {
@@ -108,4 +118,11 @@ func (p *ConnPool) gcLoop() {
 			p.GC()
 		}
 	}
+}
+
+func wsURLBase(wsURL string) string {
+	if i := strings.Index(wsURL, "?"); i > 0 {
+		return wsURL[:i]
+	}
+	return wsURL
 }

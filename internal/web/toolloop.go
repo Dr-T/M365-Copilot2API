@@ -205,6 +205,11 @@ func isContentPolicyBlock(text string) bool {
 	}
 	return false
 }
+
+func isImageLimitNotice(text string) bool {
+	t := strings.ToLower(text)
+	return strings.Contains(t, "无法生成更多图像") || strings.Contains(t, "unable to generate more images")
+}
 var sandboxHallucinationPatterns = []string{
 	"I can run that for you",
 	"I'll run that",

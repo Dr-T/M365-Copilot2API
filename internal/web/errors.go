@@ -7,7 +7,10 @@ import (
 	"net/http"
 
 	"m365-copilot2api/internal/auth"
+	"m365-copilot2api/internal/chathub"
 )
+
+var ErrOffensiveContent = errors.New("upstream content policy flagged as offensive")
 
 func logOAuthError(stage string, err error) {
 	var oauthErr *auth.OAuthError
@@ -32,6 +35,12 @@ func upstreamError(err error) string {
 // rate limits stay 429 (with Retry-After when known), auth failures become 401,
 // everything else is 502. Unknown upstream failures must never leak internals.
 func upstreamStatus(err error) int {
+	if errors.Is(err, chathub.ErrOffensiveContent) {
+		return http.StatusServiceUnavailable
+	}
+	if errors.Is(err, chathub.ErrImageLimit) {
+		return http.StatusTooManyRequests
+	}
 	if IsRateLimited(err) {
 		return http.StatusTooManyRequests
 	}
@@ -50,13 +59,23 @@ func writeUpstreamError(w http.ResponseWriter, err error) {
 	status := upstreamStatus(err)
 	if status == http.StatusTooManyRequests {
 		if w.Header().Get("Retry-After") == "" {
-			w.Header().Set("Retry-After", fmt.Sprintf("%d", int(rateLimitCooldown.Seconds())))
+			// Fallback: the configurable cooldown is in Server.getRateLimitCooldown(),
+			// but this function doesn't have access to settings. 30s is the default.
+			w.Header().Set("Retry-After", "30")
+		}
+		if errors.Is(err, chathub.ErrImageLimit) {
+			writeOpenAIError(w, status, "image_limit_error", "image generation daily limit reached; try again tomorrow")
+			return
 		}
 		writeOpenAIError(w, status, "rate_limit_error", "upstream is rate limiting; try again shortly")
 		return
 	}
 	if IsEmptyCompletion(err) {
 		writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "upstream returned empty completion; the requested model may be unavailable for this tenant")
+		return
+	}
+	if errors.Is(err, chathub.ErrOffensiveContent) {
+		writeOpenAIError(w, http.StatusServiceUnavailable, "upstream_content_blocked", "M365 content policy flagged this request as offensive")
 		return
 	}
 	writeOpenAIError(w, status, "upstream_error", upstreamError(err))

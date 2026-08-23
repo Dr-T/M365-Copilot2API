@@ -29,6 +29,10 @@ var ErrRateLimitNotice = errors.New("upstream rate-limit notice")
 
 var ErrEmptyCompletion = errors.New("upstream returned empty completion; tone may be unavailable for this tenant")
 
+var ErrImageLimit = errors.New("upstream image generation daily limit reached")
+
+var ErrOffensiveContent = errors.New("upstream content policy flagged as offensive")
+
 // DialError carries the HTTP status and optional Retry-After from a failed
 // WebSocket dial so the web layer can route it into the correct cooldown.
 type DialError struct {
@@ -86,9 +90,32 @@ type Request struct {
 	Attachments    []Attachment
 	Tools          []Tool
 	ToolChoice     any
-	MCPServerURL   string // URL of the MCP HTTP SSE server for tool discovery
-	// Started is true only for the first turn of a ChatHub conversation.
-	Started bool
+	MCPServerURL   string
+	Started        bool
+	ConversationSignature   string
+	PreviousMessages        []ContextMessage
+	LicenseType             string
+	Scenario                string
+	ConnectedFederatedIDs   []string
+	FeatureFlags            FeatureFlags
+}
+
+type FeatureFlags struct {
+	MemoryV2            bool
+	DeepWork            bool
+	ComputerUse         bool
+	RealtimeVoice       bool
+	SystemPromptOverride bool
+	DesignerImageGen4o  bool
+	CodeCanvas          bool
+	SydneyReconnect     bool
+}
+
+type ContextMessage struct {
+	Author      string `json:"author"`
+	Description string `json:"description"`
+	ContextType string `json:"contextType"`
+	MessageType string `json:"messageType"`
 }
 
 // StreamEvent is the protocol-neutral event exposed while ChatHub is still
@@ -107,16 +134,28 @@ type StreamEvent struct {
 type StreamHandler func(StreamEvent) error
 
 type Result struct {
-	Text           string
-	Reasoning      string
-	ConversationID string
-	SessionID      string
-	RequestID      string
-	Throttling     any
-	RawResult      string
-	Events         []json.RawMessage
-	Normalized     []Event
-	Images         []string
+	Text                      string
+	Reasoning                 string
+	ConversationID            string
+	SessionID                 string
+	RequestID                 string
+	Throttling                any
+	SuggestedResponses        []SuggestedResponse
+	RawResult                 string
+	Events                    []json.RawMessage
+	Normalized                []Event
+	Images                    []string
+	Offense                   string
+	ConversationTransferToken string
+	MeteringInformation       any
+	SpokenText                string
+}
+
+type SuggestedResponse struct {
+	CommandText        string `json:"commandText"`
+	Text               string `json:"text"`
+	SuggestionCategory string `json:"suggestionCategory,omitempty"`
+	ContentOrigin      string `json:"contentOrigin,omitempty"`
 }
 
 type Client struct {
@@ -124,6 +163,7 @@ type Client struct {
 	HTTPClient  *http.Client
 	Dialer      *websocket.Dialer
 	Pool        *ConnPool
+	Preheater   *Preheater
 	Trace       func(map[string]any)
 }
 
@@ -132,11 +172,15 @@ func NewClient() *Client {
 	h.Set("Origin", "https://m365.cloud.microsoft")
 	h.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0")
 	d := outbound.WebSocketDialer()
+	p := NewPreheater()
+	p.dialer = d
+	p.header = h
 	return &Client{
 		HTTPHeader: h,
 		HTTPClient: outbound.HTTPClient(),
 		Dialer:     d,
 		Pool:       NewConnPool(d, h),
+		Preheater:  p,
 	}
 }
 
@@ -200,7 +244,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		firstTurn = true
 	}
 	requestID := uuid.NewString()
-	wsURL, err := buildWSURL(acc, req.SessionID, req.ConversationID, requestID)
+	wsURL, err := buildWSURL(acc, req.SessionID, req.ConversationID, requestID, req.LicenseType, req.Scenario)
 	if err != nil {
 		return Result{}, err
 	}
@@ -212,29 +256,41 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	dialStarted := time.Now()
 	var conn *websocket.Conn
 	var reused bool
-	if c.Pool != nil {
-		var poolErr error
-		conn, reused, poolErr = c.Pool.Take(ctx, acc.OID, acc.TID, wsURL)
-		if poolErr != nil {
-			return Result{}, fmt.Errorf("ws dial: %w", poolErr)
+
+	// Try preheated connection first
+	if c.Preheater != nil {
+		if preConn := c.Preheater.Take(acc.OID, acc.TID); preConn != nil {
+			conn = preConn
+			reused = true
+			log.Printf("chathub timing ws_dial_ms=0 total_ms=%d reused=true (preheated)", time.Since(startedAt).Milliseconds())
 		}
 	}
+
 	if conn == nil {
-		var resp *http.Response
-		conn, resp, err = c.Dialer.DialContext(ctx, wsURL, c.HTTPHeader.Clone())
-		if err != nil {
-			if resp != nil && (resp.StatusCode == 429 || resp.StatusCode == 401 || resp.StatusCode == 403) {
-				retryAfter := 0
-				if v, _ := strconv.Atoi(resp.Header.Get("Retry-After")); v > 0 {
-					retryAfter = v
-				}
-				log.Printf("chathub ws_dial %d Retry-After=%d", resp.StatusCode, retryAfter)
-				return Result{}, &DialError{Status: resp.StatusCode, RetryAfter: retryAfter}
+		if c.Pool != nil {
+			var poolErr error
+			conn, reused, poolErr = c.Pool.Take(ctx, acc.OID, acc.TID, wsURL)
+			if poolErr != nil {
+				return Result{}, fmt.Errorf("ws dial: %w", poolErr)
 			}
-			return Result{}, fmt.Errorf("ws dial: %w", err)
 		}
+		if conn == nil {
+			var resp *http.Response
+			conn, resp, err = c.Dialer.DialContext(ctx, wsURL, c.HTTPHeader.Clone())
+			if err != nil {
+				if resp != nil && (resp.StatusCode == 429 || resp.StatusCode == 401 || resp.StatusCode == 403) {
+					retryAfter := 0
+					if v, _ := strconv.Atoi(resp.Header.Get("Retry-After")); v > 0 {
+						retryAfter = v
+					}
+					log.Printf("chathub ws_dial %d Retry-After=%d", resp.StatusCode, retryAfter)
+					return Result{}, &DialError{Status: resp.StatusCode, RetryAfter: retryAfter}
+				}
+				return Result{}, fmt.Errorf("ws dial: %w", err)
+			}
+		}
+		log.Printf("chathub timing ws_dial_ms=%d total_ms=%d reused=%t", time.Since(dialStarted).Milliseconds(), time.Since(startedAt).Milliseconds(), reused)
 	}
-	log.Printf("chathub timing ws_dial_ms=%d total_ms=%d reused=%t", time.Since(dialStarted).Milliseconds(), time.Since(startedAt).Milliseconds(), reused)
 
 	var writeMu sync.Mutex
 	wsWrite := func(msgType int, data []byte) error {
@@ -275,7 +331,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		}
 	}
 
-	payload := chatPayload(req.Text, req.SessionID, req.ConversationID, requestID, req.Tone, firstTurn, req.Attachments, req.Tools, req.ToolChoice, req.MCPServerURL)
+	payload := chatPayload(req.Text, req.SessionID, req.ConversationID, requestID, req.Tone, firstTurn, req.Attachments, req.Tools, req.ToolChoice, req.MCPServerURL, req.ConversationSignature, req.PreviousMessages, req.ConnectedFederatedIDs, req.FeatureFlags)
 	log.Printf("chathub prompt-trace text=%d tools=%d payload=%d", len(req.Text), len(req.Tools), len(payload))
 	if c.Trace != nil {
 		meta := map[string]any{"stage": "chathub_payload", "attachment_count": len(req.Attachments), "payload_has_attachments": strings.Contains(payload, `"attachments"`), "attachments": []map[string]any{}}
@@ -330,12 +386,22 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			strings.Contains(t, "too many requests") ||
 			strings.Contains(t, "please retry") && strings.Contains(t, "later")
 	}
+	imageLimitDetected := func(text string) bool {
+		if streamed.Len() != 0 {
+			return false
+		}
+		t := strings.ToLower(text)
+		return strings.Contains(t, "无法生成更多图像") || strings.Contains(t, "unable to generate more images")
+	}
 	emitSnapshot := func(snapshot string) error {
 		if snapshot == "" {
 			return nil
 		}
 		if chTrace {
 			log.Printf("[trace:emitSnapshot] cur=%d snapshot=%d", streamed.Len(), len(snapshot))
+		}
+		if imageLimitDetected(snapshot) {
+			return ErrImageLimit
 		}
 		if rateLimited(snapshot) {
 			return ErrRateLimitNotice
@@ -357,15 +423,20 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	var throttling any
 	var rawResult string
 	var events []json.RawMessage
+	var suggestions []SuggestedResponse
 	seenStreamTools := map[string]bool{}
 	var reasoningBuf strings.Builder
+	var offense string
+	var conversationTransferToken string
+	var meteringInformation any
+	var spokenText string
 
 	deadline := time.Now().Add(5 * time.Minute)
 	type wsRead struct {
 		msg []byte
 		err error
 	}
-	readCh := make(chan wsRead, 1)
+	readCh := make(chan wsRead, 8)
 	go func() {
 		for {
 			_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
@@ -454,6 +525,29 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					if thr, ok := arg["throttling"]; ok {
 						throttling = thr
 					}
+					if ctt, ok := arg["conversationTransferToken"].(string); ok && ctt != "" {
+						conversationTransferToken = ctt
+					}
+					if mi, ok := arg["meteringInformation"]; ok && mi != nil {
+						meteringInformation = mi
+					}
+					if srs, ok := arg["suggestedResponses"].([]any); ok {
+						for _, srRaw := range srs {
+							sr, ok := srRaw.(map[string]any)
+							if !ok {
+								continue
+							}
+							ct, _ := sr["commandText"].(string)
+							t, _ := sr["text"].(string)
+							sc, _ := sr["suggestionCategory"].(string)
+							co, _ := sr["contentOrigin"].(string)
+							if ct != "" {
+								suggestions = append(suggestions, SuggestedResponse{
+									CommandText: ct, Text: t, SuggestionCategory: sc, ContentOrigin: co,
+								})
+							}
+						}
+					}
 					if w, ok := arg["writeAtCursor"].(string); ok && w != "" && !toolFrame {
 						if err := emitSnapshot(w); err != nil {
 							returnConn = false
@@ -469,6 +563,12 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 							author, _ := m["author"].(string)
 							text, _ := m["text"].(string)
 							mt, _ := m["messageType"].(string)
+							if o, ok := m["offense"].(string); ok && o != "" && o != "Unknown" && o != "None" {
+								offense = o
+							}
+							if st, ok := m["spokenText"].(string); ok {
+								spokenText = st
+							}
 							if author == "bot" && mt == "" && text != "" {
 								// ChatHub often sends the first visible text as a full snapshot,
 								// followed by cursor deltas. Emit only the unseen suffix.
@@ -489,10 +589,27 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					if thr, ok := item["throttling"]; ok {
 						throttling = thr
 					}
+					if sugg, ok := item["suggestedResponses"].([]any); ok && len(sugg) > 0 && len(suggestions) == 0 {
+						for _, s := range sugg {
+							if sm, ok := s.(map[string]any); ok {
+								ct, _ := sm["commandText"].(string)
+								tx, _ := sm["text"].(string)
+								sc, _ := sm["suggestionCategory"].(string)
+								co, _ := sm["contentOrigin"].(string)
+								if ct != "" || tx != "" {
+									suggestions = append(suggestions, SuggestedResponse{CommandText: ct, Text: tx, SuggestionCategory: sc, ContentOrigin: co})
+								}
+							}
+						}
+					}
 					if res, ok := item["result"].(map[string]any); ok {
 						rawResult, _ = res["value"].(string)
 				if msg, ok := res["message"].(string); ok {
 						final = msg
+						if imageLimitDetected(final) {
+							returnConn = false
+							return Result{}, ErrImageLimit
+						}
 						if rateLimited(final) {
 							returnConn = false
 							return Result{}, ErrRateLimitNotice
@@ -517,6 +634,10 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 				if text == "" {
 					text = strings.Join(deltas, "")
 				}
+				if imageLimitDetected(text) {
+					returnConn = false
+					return Result{}, ErrImageLimit
+				}
 				if rateLimited(text) {
 					returnConn = false
 					return Result{}, ErrRateLimitNotice
@@ -525,18 +646,37 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					returnConn = false
 					return Result{}, ErrEmptyCompletion
 				}
-				return Result{
-					Text:           text,
-					Reasoning:      reasoningBuf.String(),
-					ConversationID: req.ConversationID,
-					SessionID:      req.SessionID,
-					RequestID:      requestID,
-					Throttling:     throttling,
-					RawResult:      rawResult,
-					Events:         events,
-					Normalized:     NormalizeEvents(events),
-					Images:         imageURLs(events),
-				}, nil
+				if offense != "" {
+					returnConn = false
+					return Result{}, ErrOffensiveContent
+				}
+				result := Result{
+					Text:                      text,
+					Reasoning:                 reasoningBuf.String(),
+					ConversationID:            req.ConversationID,
+					SessionID:                 req.SessionID,
+					RequestID:                 requestID,
+					Throttling:                throttling,
+					SuggestedResponses:        suggestions,
+					Offense:                   offense,
+					ConversationTransferToken: conversationTransferToken,
+					MeteringInformation:       meteringInformation,
+					SpokenText:                spokenText,
+					RawResult:                 rawResult,
+					Events:                    events,
+					Normalized:                NormalizeEvents(events),
+					Images:                    imageURLs(events),
+				}
+				if c.Preheater != nil {
+					go func() {
+						warmCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+						defer cancel()
+						nextReqID := uuid.NewString()
+						warmURL, _ := buildWSURL(acc, req.SessionID, req.ConversationID, nextReqID, req.LicenseType, req.Scenario)
+						c.Preheater.Warm(warmCtx, acc, warmURL)
+					}()
+				}
+				return result, nil
 			}
 		}
 	}
@@ -548,10 +688,11 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	return Result{}, fmt.Errorf("chathub response deadline exceeded before completion")
 }
 
-func buildWSURL(acc Account, sessionID, conversationID, requestID string) (string, error) {
+func buildWSURL(acc Account, sessionID, conversationID, requestID, licenseType, scenario string) (string, error) {
 	q := url.Values{}
 	q.Set("chatsessionid", requestID)
 	q.Set("clientrequestid", requestID)
+	q.Set("XRoutingParameterSessionKey", requestID)
 	q.Set("X-SessionId", sessionID)
 	q.Set("ConversationId", conversationID)
 	q.Set("access_token", acc.AccessToken)
@@ -560,9 +701,17 @@ func buildWSURL(acc Account, sessionID, conversationID, requestID string) (strin
 	q.Set("source", `"officeweb"`)
 	q.Set("product", "Office")
 	q.Set("agentHost", "Bizchat.FullScreen")
-	q.Set("licenseType", "Starter")
+	if licenseType != "" {
+		q.Set("licenseType", licenseType)
+	} else {
+		q.Set("licenseType", "Starter")
+	}
 	q.Set("agent", "web")
-	q.Set("scenario", "OfficeWebIncludedCopilot")
+	if scenario != "" {
+		q.Set("scenario", scenario)
+	} else {
+		q.Set("scenario", "OfficeWebIncludedCopilot")
+	}
 
 	// url.Values encodes quotes; probe used safe='",' so keep quotes unescaped-ish.
 	// Gorilla/url will encode " to %22 which MS accepts.
@@ -703,8 +852,16 @@ func (c *Client) uploadAttachments(ctx context.Context, acc Account, conversatio
 	return nil
 }
 
-func chatPayload(text, sessionID, conversationID, requestID, tone string, firstTurn bool, attachments []Attachment, tools []Tool, toolChoice any, mcpServerURL string) string {
+func chatPayload(text, sessionID, conversationID, requestID, tone string, firstTurn bool, attachments []Attachment, tools []Tool, toolChoice any, mcpServerURL, conversationSignature string, previousMessages []ContextMessage, connectedFederatedIDs []string, flags FeatureFlags) string {
 	text = toolProtocolPrompt(text, tools, toolChoice, len(clientPlugins(tools, mcpServerURL)) > 0)
+	federatedConns := connectedFederatedIDs
+	if len(federatedConns) == 0 {
+		federatedConns = []string{"dummyId"}
+	}
+	fcAny := make([]any, len(federatedConns))
+	for i, id := range federatedConns {
+		fcAny[i] = id
+	}
 	message := map[string]any{
 		"author":                "user",
 		"attachments":           attachments,
@@ -717,10 +874,12 @@ func chatPayload(text, sessionID, conversationID, requestID, tone string, firstT
 			"timeZone":       "Asia/Shanghai",
 		},
 		"locale":            "zh-cn",
+		"market":            "en-us",
 		"messageType":       "Chat",
 		"experienceType":    "Default",
 		"adaptiveCards":     []any{},
 		"clientPreferences": map[string]any{},
+		"connectedFederatedConnections": fcAny,
 	}
 	// The browser does not send an OpenAI attachments array to ChatHub. It
 	// sends a file annotation after the file has been uploaded by Office.
@@ -750,7 +909,7 @@ func chatPayload(text, sessionID, conversationID, requestID, tone string, firstT
 	}
 	if len(annotations) > 0 {
 		message["messageAnnotations"] = annotations
-		message["connectedFederatedConnections"] = []string{"dummyId"}
+		message["connectedFederatedConnections"] = fcAny
 	}
 	// Restore the old gateway's multimodal injection path. The historical
 	// implementation merged imageUrl/imageBase64 directly into message rather
@@ -773,16 +932,57 @@ func chatPayload(text, sessionID, conversationID, requestID, tone string, firstT
 		"update_textdoc_response_after_streaming",
 		"deepleo_networking_timeout_10minutes_canmore",
 		"cwc_flux_image",
+		"cwc_code_interpreter",
+		"cwc_code_interpreter_amsfix",
 		"cwcfluxgptv",
 		"flux_v3_gptv_enable_upload_multi_image_in_turn_wo_ch",
 		"gptvnorm2048",
+		"cwc_code_interpreter_citation_fix",
+		"code_interpreter_interactive_charts",
+		"cwc_code_interpreter_interactive_charts_inline_image",
+		"code_interpreter_matplotlib_patching",
 		"cwc_fileupload_odb",
-		"update_memory_plugin",
-		"add_custom_instructions",
 		"cwc_flux_v3",
 		"flux_v3_progress_messages",
 		"enable_batch_token_processing",
 		"enable_gg_gpt",
+		"flux_v3_references",
+		"flux_v3_references_entities",
+		"flux_v3_references_ci",
+		"add_filestore_filetype",
+		"cwc_code_interpreter_citation_sourceannotations",
+		"cdxcwc_code_interpreter_hallucinated_url_filter",
+		"flux_v3_image_gen_enable_dimensions",
+		"flux_v3_image_gen_enable_non_watermarked_storage",
+		"flux_v3_image_gen_enable_icon_dimensions",
+		"flux_v3_image_gen_enable_system_text_with_params",
+		"flux_v3_image_gen_enable_designer_dimensions_meta_prompting_in_system_prompts",
+		"flux_v3_image_gen_enable_story",
+		"rich_responses",
+	}
+	if flags.MemoryV2 {
+		optionsSets = append(optionsSets, "update_memory_plugin", "add_custom_instructions")
+	}
+	if flags.DeepWork {
+		optionsSets = append(optionsSets, "enable_deep_work")
+	}
+	if flags.ComputerUse {
+		optionsSets = append(optionsSets, "enable_computer_use")
+	}
+	if flags.RealtimeVoice {
+		optionsSets = append(optionsSets, "enable_realtime_voice")
+	}
+	if flags.SystemPromptOverride {
+		optionsSets = append(optionsSets, "enable_system_prompt_override")
+	}
+	if flags.DesignerImageGen4o {
+		optionsSets = append(optionsSets, "enable_designer_image_gen_4o")
+	}
+	if flags.CodeCanvas {
+		optionsSets = append(optionsSets, "feature.enableCodeCanvas")
+	}
+	if flags.SydneyReconnect {
+		optionsSets = append(optionsSets, "enable_sydney_reconnect")
 	}
 	chat := map[string]any{
 		"arguments": []any{
@@ -793,7 +993,16 @@ func chatPayload(text, sessionID, conversationID, requestID, tone string, firstT
 				"optionsSets":         optionsSets,
 				"options":             map[string]any{},
 				"allowedMessageTypes": []string{
-					"Chat", "Suggestion", "Disengaged", "Progress", "EndOfRequest", "InternalLoaderMessage",
+					"Chat", "Suggestion", "InternalSearchQuery", "Disengaged",
+					"InternalLoaderMessage", "Progress", "GeneratedCode",
+					"RenderCardRequest", "AdsQuery", "SemanticSerp",
+					"GenerateContentQuery", "GenerateGraphicArt", "SearchQuery",
+					"ConfirmationCard", "AuthError", "DeveloperLogs",
+					"TriggerPlugin", "HintInvocation", "MemoryUpdate",
+					"EndOfRequest", "TriggerConfirmation", "ResumeInvokeAction",
+					"ResumeUserInputRequest", "TriggerUserInputRequest",
+					"EscapeHatch", "TriggerPluginAuth", "ResumePluginAuth",
+					"SideBySide", "ReferencesListComplete", "SwitchRespondingEndpoint",
 				},
 				"sliceIds":          []any{},
 				"threadLevelGptId":  map[string]any{},
@@ -802,8 +1011,16 @@ func chatPayload(text, sessionID, conversationID, requestID, tone string, firstT
 				"isStartOfSession":  firstTurn,
 				"productThreadType": "Office",
 				"clientInfo": map[string]any{
-					"clientPlatform": "mcmcopilot-web",
-					"clientAppName":  "Office",
+					"clientPlatform":        "mcmcopilot-web",
+					"clientAppName":         "Office",
+					"clientEntrypoint":      "mcmcopilot-officeweb",
+					"clientSessionId":       sessionID,
+					"ProductCategory":       "Chat",
+					"clientAppType":         "Web",
+					"productEntryPoint":     "ChatPanel",
+					"deviceOS":              "Windows",
+					"deviceType":            "Desktop",
+					"clientPlatformVersion": "10",
 				},
 				"tone":          tone,
 				"streamingMode": "ConciseWithPadding",
@@ -816,6 +1033,12 @@ func chatPayload(text, sessionID, conversationID, requestID, tone string, firstT
 		"invocationId": "0",
 		"target":       "chat",
 		"type":         4,
+	}
+	if conversationSignature != "" {
+		chat["arguments"].([]any)[0].(map[string]any)["conversationSignature"] = conversationSignature
+	}
+	if len(previousMessages) > 0 {
+		chat["arguments"].([]any)[0].(map[string]any)["previousMessages"] = previousMessages
 	}
 	metrics := map[string]any{
 		"arguments": []any{

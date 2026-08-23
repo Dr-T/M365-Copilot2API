@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -89,15 +90,28 @@ func RetryAfterSeconds(err error) int {
 // cooled down and skipped by the round-robin until the window expires, and
 // auth-failed accounts are pinned as unusable.
 type accountHealth struct {
-	mu       sync.Mutex
-	cooldown map[string]time.Time
-	authFail map[string]bool
-	limited  map[string]bool
-	calls    map[string]uint64
+	mu              sync.Mutex
+	cooldown        map[string]time.Time
+	authFail        map[string]bool
+	limited         map[string]bool
+	calls           map[string]uint64
+	imageLimited    map[string]bool
+	imageLimitUntil map[string]time.Time
+	lastThrottling  map[string]any
+	authFailReason  map[string]string
 }
 
 func newAccountHealth() *accountHealth {
-	return &accountHealth{cooldown: map[string]time.Time{}, authFail: map[string]bool{}, limited: map[string]bool{}, calls: map[string]uint64{}}
+	return &accountHealth{
+		cooldown:        map[string]time.Time{},
+		authFail:        map[string]bool{},
+		limited:         map[string]bool{},
+		calls:           map[string]uint64{},
+		imageLimited:    map[string]bool{},
+		imageLimitUntil: map[string]time.Time{},
+		lastThrottling:  map[string]any{},
+		authFailReason:  map[string]string{},
+	}
 }
 
 func (h *accountHealth) cleanupExpiredCooldownLocked(accountID string) {
@@ -105,11 +119,13 @@ func (h *accountHealth) cleanupExpiredCooldownLocked(accountID string) {
 	if !ok || time.Now().Before(until) {
 		return
 	}
-	rateLimited := h.limited[accountID]
+	wasRateLimited := h.limited[accountID]
 	delete(h.cooldown, accountID)
 	delete(h.limited, accountID)
 	delete(h.authFail, accountID)
-	if rateLimited {
+	delete(h.authFailReason, accountID)
+	delete(h.imageLimited, accountID)
+	if wasRateLimited {
 		delete(h.calls, accountID)
 	}
 }
@@ -144,6 +160,73 @@ func (h *accountHealth) RateLimited(accountID string) bool {
 	return h.limited[accountID]
 }
 
+func (h *accountHealth) MarkImageLimited(accountID string) {
+	if h == nil || accountID == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.imageLimited[accountID] = true
+	h.imageLimitUntil[accountID] = time.Now().Add(24 * time.Hour)
+	h.cooldown[accountID] = time.Now().Add(24 * time.Hour)
+}
+
+func (h *accountHealth) ImageLimited(accountID string) bool {
+	if h == nil {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.imageLimited[accountID] {
+		if until, ok := h.imageLimitUntil[accountID]; ok && time.Now().After(until) {
+	delete(h.imageLimited, accountID)
+	delete(h.imageLimitUntil, accountID)
+			delete(h.imageLimitUntil, accountID)
+		}
+	}
+	h.cleanupExpiredCooldownLocked(accountID)
+	return h.imageLimited[accountID]
+}
+
+func (h *accountHealth) UpdateThrottling(accountID string, data any) {
+	if h == nil || accountID == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.lastThrottling[accountID] = data
+}
+
+func (h *accountHealth) GetThrottling(accountID string) any {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	v := h.lastThrottling[accountID]
+	h.mu.Unlock()
+	if v == nil {
+		return nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return v
+	}
+	var copy any
+	if json.Unmarshal(b, &copy) != nil {
+		return v
+	}
+	return copy
+}
+
+func (h *accountHealth) AuthFailReason(accountID string) string {
+	if h == nil {
+		return ""
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.authFailReason[accountID]
+}
+
 func (h *accountHealth) MarkFailure(accountID string, err error, window time.Duration) {
 	if window <= 0 {
 		window = 60 * time.Second
@@ -158,10 +241,22 @@ func (h *accountHealth) MarkFailure(accountID string, err error, window time.Dur
 		h.cooldown[accountID] = time.Now().Add(cooldown)
 		h.authFail[accountID] = true
 		delete(h.limited, accountID)
+		var httpErr *UpstreamHTTPError
+		if errors.As(err, &httpErr) {
+			h.authFailReason[accountID] = fmt.Sprintf("%d", httpErr.Status)
+		} else {
+			var dialErr *chathub.DialError
+			if errors.As(err, &dialErr) {
+				h.authFailReason[accountID] = fmt.Sprintf("%d", dialErr.Status)
+			} else {
+				h.authFailReason[accountID] = "401"
+			}
+		}
 		return
 	}
 	if IsRateLimited(err) {
 		delete(h.authFail, accountID)
+		delete(h.authFailReason, accountID)
 		h.limited[accountID] = true
 		cd := window
 		if ra := RetryAfterSeconds(err); ra > 0 {
@@ -178,9 +273,20 @@ func (h *accountHealth) MarkFailure(accountID string, err error, window time.Dur
 func (h *accountHealth) MarkSuccess(accountID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	imageLimited := h.imageLimited[accountID]
+	imageLimitUntil := h.imageLimitUntil[accountID]
 	delete(h.cooldown, accountID)
 	delete(h.authFail, accountID)
 	delete(h.limited, accountID)
+	delete(h.authFailReason, accountID)
+	if imageLimited && time.Now().Before(imageLimitUntil) {
+		h.imageLimited[accountID] = true
+		h.imageLimitUntil[accountID] = imageLimitUntil
+		h.cooldown[accountID] = imageLimitUntil
+	} else {
+		delete(h.imageLimited, accountID)
+		delete(h.imageLimitUntil, accountID)
+	}
 }
 
 // Available reports whether the account may be used right now.
@@ -215,17 +321,54 @@ func (h *accountHealth) CooldownUntil(accountID string) (time.Time, bool) {
 func (h *accountHealth) Snapshot() map[string]map[string]any {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	out := make(map[string]map[string]any, len(h.cooldown)+len(h.authFail))
-	for id, until := range h.cooldown {
-		out[id] = map[string]any{"available": time.Now().After(until), "cooldownUntil": until}
+	out := make(map[string]map[string]any)
+	ids := make(map[string]bool)
+	for id := range h.cooldown {
+		ids[id] = true
 	}
-	for id, failed := range h.authFail {
-		if failed {
-			if _, ok := out[id]; !ok {
-				out[id] = map[string]any{}
-			}
-			out[id]["authFailed"] = true
+	for id := range h.authFail {
+		ids[id] = true
+	}
+	for id := range h.limited {
+		ids[id] = true
+	}
+	for id := range h.imageLimited {
+		ids[id] = true
+	}
+	for id := range h.lastThrottling {
+		ids[id] = true
+	}
+	for id := range h.calls {
+		ids[id] = true
+	}
+	for id := range ids {
+		h.cleanupExpiredCooldownLocked(id)
+		m := map[string]any{}
+		if until, ok := h.cooldown[id]; ok {
+			m["available"] = time.Now().After(until)
+			m["cooldownUntil"] = until
+		} else {
+			m["available"] = true
 		}
+		if h.authFail[id] {
+			m["authFailed"] = true
+		}
+		if h.limited[id] {
+			m["limited"] = true
+		}
+		if h.imageLimited[id] {
+			m["imageLimited"] = true
+		}
+		if t := h.lastThrottling[id]; t != nil {
+			m["throttling"] = t
+		}
+		if r := h.authFailReason[id]; r != "" {
+			m["authFailReason"] = r
+		}
+		if c := h.calls[id]; c > 0 {
+			m["calls"] = c
+		}
+		out[id] = m
 	}
 	return out
 }
@@ -237,6 +380,10 @@ func (h *accountHealth) ClearAllCooldowns() {
 	h.authFail = map[string]bool{}
 	h.limited = map[string]bool{}
 	h.calls = map[string]uint64{}
+	h.imageLimited = map[string]bool{}
+	h.imageLimitUntil = map[string]time.Time{}
+	h.lastThrottling = map[string]any{}
+	h.authFailReason = map[string]string{}
 }
 
 // EarliestRecovery returns the earliest time at which any account may become
