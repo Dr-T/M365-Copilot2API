@@ -82,7 +82,7 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           commit="$(git rev-parse --short HEAD)"
           build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          ldflags="-s -w -trimpath -X m365-copilot2api/internal/web.Version=${version} -X m365-copilot2api/internal/web.Commit=${commit} -X m365-copilot2api/internal/web.BuildTime=${build_time}"
+          ldflags="-s -w -X m365-copilot2api/internal/web.Version=${version} -X m365-copilot2api/internal/web.Commit=${commit} -X m365-copilot2api/internal/web.BuildTime=${build_time}"
           go build -trimpath -ldflags="${ldflags}" -o "${output}" ./cmd/server
 
       - name: Upload artifact
