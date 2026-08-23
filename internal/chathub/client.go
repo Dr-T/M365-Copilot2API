@@ -159,12 +159,11 @@ type SuggestedResponse struct {
 }
 
 type Client struct {
-	HTTPHeader  http.Header
-	HTTPClient  *http.Client
-	Dialer      *websocket.Dialer
-	Pool        *ConnPool
-	Preheater   *Preheater
-	Trace       func(map[string]any)
+	HTTPHeader http.Header
+	HTTPClient *http.Client
+	Dialer     *websocket.Dialer
+	Pool       *ConnPool
+	Trace      func(map[string]any)
 }
 
 func NewClient() *Client {
@@ -172,15 +171,11 @@ func NewClient() *Client {
 	h.Set("Origin", "https://m365.cloud.microsoft")
 	h.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0")
 	d := outbound.WebSocketDialer()
-	p := NewPreheater()
-	p.dialer = d
-	p.header = h
 	return &Client{
 		HTTPHeader: h,
 		HTTPClient: outbound.HTTPClient(),
 		Dialer:     d,
 		Pool:       NewConnPool(d, h),
-		Preheater:  p,
 	}
 }
 
@@ -257,39 +252,43 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	var conn *websocket.Conn
 	var reused bool
 
-	// Try preheated connection first
-	if c.Preheater != nil {
-		if preConn := c.Preheater.Take(acc.OID, acc.TID); preConn != nil {
-			conn = preConn
-			reused = true
-			log.Printf("chathub timing ws_dial_ms=0 total_ms=%d reused=true (preheated)", time.Since(startedAt).Milliseconds())
+	if c.Pool != nil {
+		var poolErr error
+		conn, reused, poolErr = c.Pool.Take(ctx, acc.OID, acc.TID, wsURL)
+		if poolErr != nil {
+			return Result{}, fmt.Errorf("ws dial: %w", poolErr)
+		}
+		if reused {
+			go func() {
+				warmCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				warmReqID := uuid.NewString()
+				warmSID := uuid.NewString()
+				warmCID := uuid.NewString()
+				warmURL, _ := buildWSURL(acc, warmSID, warmCID, warmReqID, req.LicenseType, req.Scenario)
+				c.Pool.Warm(warmCtx, acc, warmURL)
+			}()
 		}
 	}
-
 	if conn == nil {
-		if c.Pool != nil {
-			var poolErr error
-			conn, reused, poolErr = c.Pool.Take(ctx, acc.OID, acc.TID, wsURL)
-			if poolErr != nil {
-				return Result{}, fmt.Errorf("ws dial: %w", poolErr)
-			}
-		}
-		if conn == nil {
-			var resp *http.Response
-			conn, resp, err = c.Dialer.DialContext(ctx, wsURL, c.HTTPHeader.Clone())
-			if err != nil {
-				if resp != nil && (resp.StatusCode == 429 || resp.StatusCode == 401 || resp.StatusCode == 403) {
-					retryAfter := 0
-					if v, _ := strconv.Atoi(resp.Header.Get("Retry-After")); v > 0 {
-						retryAfter = v
-					}
-					log.Printf("chathub ws_dial %d Retry-After=%d", resp.StatusCode, retryAfter)
-					return Result{}, &DialError{Status: resp.StatusCode, RetryAfter: retryAfter}
+		var resp *http.Response
+		conn, resp, err = c.Dialer.DialContext(ctx, wsURL, c.HTTPHeader.Clone())
+		if err != nil {
+			if resp != nil && (resp.StatusCode == 429 || resp.StatusCode == 401 || resp.StatusCode == 403) {
+				retryAfter := 0
+				if v, _ := strconv.Atoi(resp.Header.Get("Retry-After")); v > 0 {
+					retryAfter = v
 				}
-				return Result{}, fmt.Errorf("ws dial: %w", err)
+				log.Printf("chathub ws_dial %d Retry-After=%d", resp.StatusCode, retryAfter)
+				return Result{}, &DialError{Status: resp.StatusCode, RetryAfter: retryAfter}
 			}
+			return Result{}, fmt.Errorf("ws dial: %w", err)
 		}
-		log.Printf("chathub timing ws_dial_ms=%d total_ms=%d reused=%t", time.Since(dialStarted).Milliseconds(), time.Since(startedAt).Milliseconds(), reused)
+	}
+	if reused {
+		log.Printf("chathub timing ws_dial_ms=0 total_ms=%d reused=true (pooled)", time.Since(startedAt).Milliseconds())
+	} else {
+		log.Printf("chathub timing ws_dial_ms=%d total_ms=%d reused=false", time.Since(dialStarted).Milliseconds(), time.Since(startedAt).Milliseconds())
 	}
 
 	var writeMu sync.Mutex
@@ -299,7 +298,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		return conn.WriteMessage(msgType, data)
 	}
 
-	returnConn := true
+	returnConn := false
 	defer func() {
 		if returnConn && conn != nil && c.Pool != nil {
 			_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
@@ -667,13 +666,15 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					Normalized:                NormalizeEvents(events),
 					Images:                    imageURLs(events),
 				}
-				if c.Preheater != nil {
+				if c.Pool != nil {
 					go func() {
 						warmCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 						defer cancel()
-						nextReqID := uuid.NewString()
-						warmURL, _ := buildWSURL(acc, req.SessionID, req.ConversationID, nextReqID, req.LicenseType, req.Scenario)
-						c.Preheater.Warm(warmCtx, acc, warmURL)
+						warmReqID := uuid.NewString()
+						warmSID := uuid.NewString()
+						warmCID := uuid.NewString()
+						warmURL, _ := buildWSURL(acc, warmSID, warmCID, warmReqID, req.LicenseType, req.Scenario)
+						c.Pool.Warm(warmCtx, acc, warmURL)
 					}()
 				}
 				return result, nil
