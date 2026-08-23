@@ -40,6 +40,8 @@ jobs:
             goarch: arm64
           - goos: linux
             goarch: "386"
+          - goos: linux
+            goarch: arm
           - goos: windows
             goarch: amd64
           - goos: windows
