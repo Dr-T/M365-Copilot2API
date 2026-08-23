@@ -75,7 +75,7 @@ func writeUpstreamError(w http.ResponseWriter, err error) {
 		return
 	}
 	if errors.Is(err, chathub.ErrOffensiveContent) {
-		writeOpenAIError(w, http.StatusServiceUnavailable, "upstream_content_blocked", "M365 content policy flagged this request as offensive")
+		writeOpenAIError(w, http.StatusServiceUnavailable, "upstream_content_blocked", "M365 content policy blocked this request; try again or switch account")
 		return
 	}
 	writeOpenAIError(w, status, "upstream_error", upstreamError(err))

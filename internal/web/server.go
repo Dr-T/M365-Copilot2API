@@ -344,6 +344,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/stats/reset", s.handleCacheStatsReset)
 	m.HandleFunc("/api/usage", s.adminUsage)
 	m.HandleFunc("/api/usage/logs", s.adminUsageLogs)
+	m.HandleFunc("/api/plugins", s.plugins)
 	m.HandleFunc("/v1/models", s.openaiModels)
 	m.HandleFunc("/v1/chat/completions", s.openaiChat)
 	m.HandleFunc("/v1/responses", s.responses)
@@ -1256,6 +1257,16 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 	if body.SessionKey != "" {
 		s.sessions.upsert(conversation{ID: body.SessionKey, AccountID: acc.ID, ConversationID: res.ConversationID, SessionID: res.SessionID, Title: text})
 	}
+	if res.Throttling != nil {
+		if b, err := json.Marshal(res.Throttling); err == nil {
+			w.Header().Set("X-M365-Throttling", string(b))
+		}
+	}
+	if len(res.Scores) > 0 {
+		if b, err := json.Marshal(res.Scores); err == nil {
+			w.Header().Set("X-M365-Scores", string(b))
+		}
+	}
 	jsonOut(w, map[string]any{
 		"status":              "ok",
 		"text":                res.Text,
@@ -1269,9 +1280,12 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 		"images":              res.Images,
 		"account":             map[string]any{"id": acc.ID, "email": acc.Email},
 		"offense":             res.Offense,
+		"scores":              res.Scores,
 		"conversationTransferToken": res.ConversationTransferToken,
 		"meteringInformation": res.MeteringInformation,
 		"spokenText":          res.SpokenText,
+		"storageMessageId":   res.StorageMessageID,
+		"timestamps":         res.Timestamps,
 	})
 }
 
@@ -1501,14 +1515,14 @@ func normalizeLegacyTools(body *oaiReq) {
 	}
 }
 
-func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedger, planningMode string, mcpServerURL string, cfg runtimeSettings, flags chathub.FeatureFlags) chathub.Request {
+func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedger, planningMode string, mcpServerURL string, cfg runtimeSettings, flags chathub.FeatureFlags, locale chathubLocale) chathub.Request {
 	if len(ledger.Completed) > 0 || len(ledger.Pending) > 0 {
 		answerPrompt += "\n" + ledger.RouterContext()
 	}
 	if len(ledger.Completed) > 0 {
 		answerPrompt += "\nFINAL ANSWER RULE: Report only actions supported by completed tool results. If the goal is not fully verified, state exactly what remains unconfirmed."
 	}
-	req := chathub.Request{Text: answerPrompt, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, LicenseType: cfg.LicenseType, Scenario: cfg.Scenario, FeatureFlags: flags}
+	req := chathub.Request{Text: answerPrompt, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, LicenseType: cfg.LicenseType, Scenario: cfg.Scenario, FeatureFlags: flags, Locale: locale.Locale, Market: locale.Market, TimeZone: locale.TimeZone, TimeZoneOffset: locale.TimeZoneOffset, DeviceOS: locale.DeviceOS}
 	if planningMode == "native" {
 		req.Tools = body.Tools
 		req.ToolChoice = body.ToolChoice
@@ -1744,6 +1758,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 	defer cancel()
 	account := chathub.Account{AccessToken: acc.AccessToken, OID: acc.OID, TID: acc.TID}
+	localeInfo := parseLocaleFromHeaders(r)
 	// The stream is opened by the actual response path below. Do not emit a
 	// tool preamble here: a request may contain tools in its schema while still
 	// being an ordinary text question.
@@ -1798,7 +1813,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if body.Stream {
-		answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode, mcpServerURL, s.settings.get(), s.featureFlags())
+		answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode, mcpServerURL, s.settings.get(), s.featureFlags(), localeInfo)
 		answerPrompt = answerReq.Text
 		log.Printf("[req-trace] id=%s stage=answer_start prompt_len=%d native_tools=%d mcp=%s", requestID, len(answerPrompt), len(answerReq.Tools), mcpServerURL)
 		id := "chatcmpl-" + uuid.NewString()
@@ -2005,6 +2020,18 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			s.accountPool.UpdateThrottling(acc.ID, res.Throttling)
 			s.logThrottlingWarning(acc.ID, res.Throttling)
 		}
+		if isContentPolicyBlock(res.Text) {
+			log.Printf("[content-policy] M365 blocked the request (streaming), sending error")
+			s.accountPool.MarkFailure(acc.ID, chathub.ErrOffensiveContent, s.getRateLimitCooldown())
+			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "M365 content policy blocked this request; try again or switch account", "code": "upstream_content_blocked"}})+"\n\n")
+			_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+			return
+		}
+		if isImageLimitNotice(res.Text) {
+			if s.accountPool != nil {
+				s.accountPool.MarkImageLimited(acc.ID)
+			}
+		}
 		if text.Len() == 0 && strings.TrimSpace(res.Text) != "" {
 			text.WriteString(res.Text)
 			pending.WriteString(res.Text)
@@ -2063,7 +2090,16 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		finishChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}}
+		if res.Throttling != nil {
+			finishChunk["x_m365_throttling"] = res.Throttling
+		}
+		if len(res.Scores) > 0 {
+			finishChunk["x_m365_scores"] = res.Scores
+		}
 		_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(finishChunk)+"\n\n")
+		if res.Timestamps.RequestSent != "" {
+			_ = sseRaw(r.Context(), w, flusher, "event: m365-metrics\ndata: "+mustJSON(res.Timestamps)+"\n\n")
+		}
 		_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 		if body.User != "" && res.ConversationID != "" {
 			s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
@@ -2156,7 +2192,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			return
 		}
 	}
-	answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode, mcpServerURL, s.settings.get(), s.featureFlags())
+	answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode, mcpServerURL, s.settings.get(), s.featureFlags(), localeInfo)
 	answerPrompt = answerReq.Text
 	var res chathub.Result
 	if body.Stream {
@@ -2264,6 +2300,18 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				s.accountPool.UpdateThrottling(acc.ID, res.Throttling)
 				s.logThrottlingWarning(acc.ID, res.Throttling)
 			}
+			if isContentPolicyBlock(res.Text) {
+				log.Printf("[content-policy] M365 blocked the request (reasoning stream), sending error")
+				s.accountPool.MarkFailure(acc.ID, chathub.ErrOffensiveContent, s.getRateLimitCooldown())
+				_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "M365 content policy blocked this request; try again or switch account", "code": "upstream_content_blocked"}})+"\n\n")
+				_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+				return
+			}
+			if isImageLimitNotice(res.Text) {
+				if s.accountPool != nil {
+					s.accountPool.MarkImageLimited(acc.ID)
+				}
+			}
 		} else {
 			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
 			s.accountPool.MarkFailure(acc.ID, err, s.getRateLimitCooldown())
@@ -2291,10 +2339,19 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 		finish := "stop"
 		if err != nil {
-			finish = "stop"
+			finish = "error"
 		}
 		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finish}}, "usage": map[string]any{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}}
+		if res.Throttling != nil {
+			usageChunk["x_m365_throttling"] = res.Throttling
+		}
+		if len(res.Scores) > 0 {
+			usageChunk["x_m365_scores"] = res.Scores
+		}
 		_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(usageChunk)+"\n\n")
+		if res.Timestamps.RequestSent != "" {
+			_ = sseRaw(r.Context(), w, flusher, "event: m365-metrics\ndata: "+mustJSON(res.Timestamps)+"\n\n")
+		}
 		_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 	} else {
 		res, err = s.chatWithAccount(ctx, acc.ID, account, answerReq)
@@ -2501,6 +2558,12 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		pt := EstimateTokens(prompt)
 		ct := EstimateTokens(res.Text)
 		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}, "usage": map[string]any{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}}
+		if res.Throttling != nil {
+			usageChunk["x_m365_throttling"] = res.Throttling
+		}
+		if len(res.Scores) > 0 {
+			usageChunk["x_m365_scores"] = res.Scores
+		}
 		_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(usageChunk)+"\n\n")
 		_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 		return
@@ -2529,6 +2592,19 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	// OpenAI 要求的 usage 字段。
 	pt := EstimateTokens(prompt)
 	ct := EstimateTokens(res.Text)
+	if res.Timestamps.RequestSent != "" {
+		w.Header().Set("X-M365-Metrics", mustJSON(res.Timestamps))
+	}
+	if res.Throttling != nil {
+		if b, err := json.Marshal(res.Throttling); err == nil {
+			w.Header().Set("X-M365-Throttling", string(b))
+		}
+	}
+	if len(res.Scores) > 0 {
+		if b, err := json.Marshal(res.Scores); err == nil {
+			w.Header().Set("X-M365-Scores", string(b))
+		}
+	}
 	jsonOut(w, map[string]any{
 		"id":      id,
 		"object":  "chat.completion",
@@ -2682,6 +2758,56 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+type chathubLocale struct {
+	Locale         string
+	Market         string
+	TimeZone       string
+	TimeZoneOffset int
+	DeviceOS       string
+}
+
+func parseLocaleFromHeaders(r *http.Request) chathubLocale {
+	loc := chathubLocale{}
+	if override := strings.TrimSpace(r.Header.Get("X-M365-Locale")); override != "" {
+		loc.Locale = strings.ToLower(override)
+	} else {
+		loc.Locale = strings.TrimSpace(r.Header.Get("Accept-Language"))
+		if loc.Locale == "" {
+			loc.Locale = "en-us"
+		} else {
+			if idx := strings.Index(loc.Locale, ";"); idx >= 0 {
+				loc.Locale = strings.TrimSpace(loc.Locale[:idx])
+			}
+			if idx := strings.Index(loc.Locale, ","); idx >= 0 {
+				loc.Locale = strings.TrimSpace(loc.Locale[:idx])
+			}
+			loc.Locale = strings.ToLower(loc.Locale)
+		}
+	}
+	loc.Market = strings.TrimSpace(r.Header.Get("X-M365-Market"))
+	if loc.Market == "" {
+		loc.Market = "en-us"
+	} else {
+		loc.Market = strings.ToLower(strings.TrimSpace(loc.Market))
+	}
+	tz := strings.TrimSpace(r.Header.Get("X-M365-TimeZone"))
+	if tz != "" {
+		loc.TimeZone = tz
+		if l, err := time.LoadLocation(tz); err == nil {
+			_, offset := time.Now().In(l).Zone()
+			loc.TimeZoneOffset = offset / 3600
+		}
+	} else {
+		loc.TimeZone = "UTC"
+		loc.TimeZoneOffset = 0
+	}
+	loc.DeviceOS = strings.TrimSpace(r.Header.Get("X-M365-DeviceOS"))
+	if loc.DeviceOS == "" {
+		loc.DeviceOS = "Windows"
+	}
+	return loc
 }
 
 func extractOIDTID(accessToken string) (oid, tid string) {

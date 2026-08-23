@@ -76,8 +76,19 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 		s.sessions.upsert(conversation{ID: body.SessionKey, AccountID: acc.ID, ConversationID: res.ConversationID, SessionID: res.SessionID, Title: text})
 	}
 	res.Text = sanitizePublicAssistantText(res.Text)
+	res.Text, _ = chathub.StripCitationMarkers(res.Text, res.References)
 	res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
 
+	if res.Throttling != nil {
+		if b, err := json.Marshal(res.Throttling); err == nil {
+			w.Header().Set("X-M365-Throttling", string(b))
+		}
+	}
+	if len(res.Scores) > 0 {
+		if b, err := json.Marshal(res.Scores); err == nil {
+			w.Header().Set("X-M365-Scores", string(b))
+		}
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -108,8 +119,10 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 		"type": "done", "text": res.Text,
 		"conversationId": res.ConversationID, "sessionId": res.SessionID, "requestId": res.RequestID,
 		"throttling": res.Throttling, "suggestedResponses": res.SuggestedResponses,
-		"offense": res.Offense, "conversationTransferToken": res.ConversationTransferToken,
+		"offense": res.Offense, "scores": res.Scores, "conversationTransferToken": res.ConversationTransferToken,
 		"meteringInformation": res.MeteringInformation, "spokenText": res.SpokenText,
+		"storageMessageId": res.StorageMessageID,
+		"timestamps": res.Timestamps,
 	}); err != nil {
 		return
 	}

@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"m365-copilot2api/internal/chathub"
 	"strings"
 
 	"github.com/google/uuid"
@@ -186,24 +187,8 @@ func isToolRefusal(text string) bool {
 	return false
 }
 
-var contentPolicyPatterns = []string{
-	"很抱歉，我无法响应",
-	"我很抱歉，我无法响应",
-	"i'm sorry, i can't respond",
-	"i'm sorry, i cannot respond",
-}
-
 func isContentPolicyBlock(text string) bool {
-	if len(text) > 300 {
-		return false
-	}
-	low := strings.ToLower(text)
-	for _, p := range contentPolicyPatterns {
-		if strings.Contains(low, strings.ToLower(p)) {
-			return true
-		}
-	}
-	return false
+	return chathub.IsContentPolicyBlock(text)
 }
 
 func isImageLimitNotice(text string) bool {
