@@ -36,5 +36,5 @@ func ReleaseTag() string {
 	if v == "" || v == "dev" {
 		return ""
 	}
-	return fmt.Sprintf("stable-v%s", v)
+	return fmt.Sprintf("v%s", v)
 }
