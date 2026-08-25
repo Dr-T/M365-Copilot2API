@@ -562,7 +562,11 @@ func (s *Server) adminKeys(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, 405, "invalid_request_error", "method not allowed")
 	}
 }
-func (s *Server) validAPIKey(r *http.Request) bool {
+// rawAPIKey returns the full API key presented by the caller (X-API-Key or
+// Authorization: Bearer), or "" when none is present. Unlike extractAPIKey it
+// does not truncate: callers that use the key as a tenant/isolation identity
+// need the complete secret so distinct keys never collide on a shared prefix.
+func rawAPIKey(r *http.Request) string {
 	raw := strings.TrimSpace(r.Header.Get("X-API-Key"))
 	if raw == "" {
 		v := r.Header.Get("Authorization")
@@ -570,6 +574,11 @@ func (s *Server) validAPIKey(r *http.Request) bool {
 			raw = strings.TrimSpace(v[7:])
 		}
 	}
+	return raw
+}
+
+func (s *Server) validAPIKey(r *http.Request) bool {
+	raw := rawAPIKey(r)
 	return raw != "" && s.apiKeys.valid(raw)
 }
 
@@ -1651,7 +1660,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if body.User != "" && body.ConversationID == "" {
-		if us, ok := s.userSessions.Get(body.User); ok {
+		if us, ok := s.userSessions.Get(tenantFromRequest(r), body.User); ok {
 			body.AccountID = firstNonEmpty(body.AccountID, us.AccountID)
 			body.ConversationID = us.ConversationID
 			body.SessionID = us.SessionID
@@ -2079,7 +2088,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}
 			_ = writeToolResponse(w, id, model, true, body.shouldSendStreamUsage(), calls, toolResult)
 			if body.User != "" && res.ConversationID != "" {
-				s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
+				s.userSessions.Put(tenantFromRequest(r), body.User, res.ConversationID, res.SessionID, acc.ID)
 			}
 			s.bindConversation(acc, &body, r, res, answerPrompt, startedAt)
 			s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
@@ -2102,7 +2111,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 		if body.User != "" && res.ConversationID != "" {
-			s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
+			s.userSessions.Put(tenantFromRequest(r), body.User, res.ConversationID, res.SessionID, acc.ID)
 		}
 		s.bindConversation(acc, &body, r, res, answerPrompt, startedAt)
 		s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
@@ -2420,7 +2429,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	}
 	if body.Stream {
 		if body.User != "" && res.ConversationID != "" {
-			s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
+			s.userSessions.Put(tenantFromRequest(r), body.User, res.ConversationID, res.SessionID, acc.ID)
 		}
 		s.bindConversation(acc, &body, r, res, prompt, startedAt)
 		s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
@@ -2431,7 +2440,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		s.sessions.upsert(conversation{ID: body.SessionKey, AccountID: acc.ID, ConversationID: res.ConversationID, SessionID: res.SessionID, Title: prompt})
 	}
 	if body.User != "" && res.ConversationID != "" {
-		s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
+		s.userSessions.Put(tenantFromRequest(r), body.User, res.ConversationID, res.SessionID, acc.ID)
 		log.Printf("[user-session] put user=%s conversation=%s session=%s", body.User, res.ConversationID, res.SessionID)
 	}
 	if res.ConversationID != "" {
