@@ -71,10 +71,16 @@ func (r responsesRequest) openAI() (oaiReq, error) {
 				continue
 			case "function_call_output":
 				id, _ := m["call_id"].(string)
-				o.Messages = append(o.Messages, oaiMsg{Role: "tool", ToolCallID: id, Content: m["output"]})
+				if strings.TrimSpace(id) == "" {
+					return o, fmt.Errorf("function_call_output missing call_id")
+				}
+				o.Messages = append(o.Messages, oaiMsg{Role: "tool", ToolCallID: strings.TrimSpace(id), Content: m["output"]})
 			case "custom_tool_call_output":
 				id, _ := m["call_id"].(string)
-				o.Messages = append(o.Messages, oaiMsg{Role: "tool", ToolCallID: id, Content: m["output"]})
+				if strings.TrimSpace(id) == "" {
+					return o, fmt.Errorf("custom_tool_call_output missing call_id")
+				}
+				o.Messages = append(o.Messages, oaiMsg{Role: "tool", ToolCallID: strings.TrimSpace(id), Content: m["output"]})
 			case "function_call":
 				id, _ := m["call_id"].(string)
 				name, _ := m["name"].(string)

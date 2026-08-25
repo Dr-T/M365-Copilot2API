@@ -1,11 +1,17 @@
 package auth
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,9 +47,6 @@ type Store struct {
 	inflight map[string]*inflightRefresh
 }
 
-// inflightRefresh coalesces concurrent EnsureValid refreshes for the same
-// account: AAD refresh tokens can only be redeemed once, so a stampede of
-// concurrent requests must not each try Refresh().
 type inflightRefresh struct {
 	done chan struct{}
 	acc  AccountToken
@@ -76,10 +79,155 @@ func CachePath() string {
 	return filepath.Join(h, ".config", "m365-copilot2api", "accounts.json")
 }
 
+// TODO(security): 当前使用 AES-GCM + pepper HMAC-SHA256 派生 (M365_MASTER_KEY) 提供 AEAD 加密与 0600 落盘，
+// 兼容明文迁移。未来迁移到 XChaCha20-Poly1305 (golang.org/x/crypto/chacha20poly1305.NewX, 24-byte nonce)
+// 并将主密钥接入 OS DPAPI/keyring (Windows DPAPI, macOS Keychain, Linux libsecret)，见 TODO 后续。
+const encPrefix = "enc:v1:"
+
+func masterKey() []byte {
+	raw := strings.TrimSpace(os.Getenv("M365_MASTER_KEY"))
+	if raw == "" {
+		raw = strings.TrimSpace(os.Getenv("M365_TOKEN_ENCRYPTION_KEY"))
+	}
+	if raw == "" {
+		log.Printf("[security] WARNING: M365_MASTER_KEY not set; refresh tokens are encrypted with a built-in public fallback key. Set M365_MASTER_KEY to protect accounts.json at rest.")
+		raw = "m365-copilot2api-fallback-pepper-v1-TODO-DPAPI-keyring"
+	}
+	pepper := []byte("m365-copilot2api-pepper-v1")
+	mac := hmac.New(sha256.New, pepper)
+	_, _ = mac.Write([]byte(raw))
+	return mac.Sum(nil)
+}
+
+func isEncrypted(s string) bool { return strings.HasPrefix(s, encPrefix) }
+
+func encryptRefreshToken(plain string) (string, error) {
+	if plain == "" {
+		return "", nil
+	}
+	if isEncrypted(plain) {
+		return plain, nil
+	}
+	key := masterKey()
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	ct := gcm.Seal(nonce, nonce, []byte(plain), nil)
+	return encPrefix + base64.StdEncoding.EncodeToString(ct), nil
+}
+
+func decryptRefreshToken(enc string) (string, error) {
+	if enc == "" {
+		return "", nil
+	}
+	if !isEncrypted(enc) {
+		return enc, nil
+	}
+	raw := strings.TrimPrefix(enc, encPrefix)
+	b, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		if b2, err2 := base64.RawStdEncoding.DecodeString(raw); err2 == nil {
+			b = b2
+		} else {
+			return "", err
+		}
+	}
+	key := masterKey()
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	if len(b) < gcm.NonceSize() {
+		return "", errors.New("ciphertext too short")
+	}
+	nonce, ct := b[:gcm.NonceSize()], b[gcm.NonceSize():]
+	pt, err := gcm.Open(nil, nonce, ct, nil)
+	if err != nil {
+		return "", err
+	}
+	return string(pt), nil
+}
+
+func fsyncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
+}
+
+func writeFileAtomic(path string, b []byte, perm os.FileMode) error {
+	if path == "" {
+		return nil
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	cleanupStaleTmp(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp.*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		tmp.Close()
+		os.Remove(tmpName)
+	}()
+	if err := tmp.Chmod(perm); err != nil {
+		return err
+	}
+	if _, err := tmp.Write(b); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	_ = fsyncDir(dir)
+	return nil
+}
+
+func cleanupStaleTmp(path string) {
+	if path == "" {
+		return
+	}
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	for _, pat := range []string{filepath.Join(dir, "."+base+".tmp.*"), filepath.Join(dir, base+".tmp.*")} {
+		if matches, _ := filepath.Glob(pat); matches != nil {
+			for _, m := range matches {
+				_ = os.Remove(m)
+			}
+		}
+	}
+	_ = os.Remove(path + ".tmp")
+}
+
 func OpenStore(path string) (*Store, error) {
 	if path == "" {
 		path = CachePath()
 	}
+	cleanupStaleTmp(path)
 	s := &Store{path: path, data: Cache{Accounts: []AccountToken{}}}
 	b, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -91,9 +239,13 @@ func OpenStore(path string) (*Store, error) {
 	if err := json.Unmarshal(b, &s.data); err != nil {
 		return nil, err
 	}
-	// Normalize oid/tid for older cache entries.
 	for i := range s.data.Accounts {
 		a := &s.data.Accounts[i]
+		if dec, err := decryptRefreshToken(a.RefreshToken); err == nil {
+			a.RefreshToken = dec
+		} else if isEncrypted(a.RefreshToken) {
+			log.Printf("[security] WARNING: failed to decrypt refresh token for account %s (email=%s): %v. Token kept as-is; refresh will fail until M365_MASTER_KEY matches the encryption key.", a.ID, a.Email, err)
+		}
 		if a.OID == "" {
 			a.OID = a.ID
 		}
@@ -104,30 +256,33 @@ func OpenStore(path string) (*Store, error) {
 	return s, nil
 }
 
-func (s *Store) Path() string {
-	return s.path
-}
+func (s *Store) Path() string { return s.path }
 
 func (s *Store) saveLocked() error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
-		// /tmp has no nested dir needs usually; ignore if parent is root-ish
 		if filepath.Dir(s.path) != "/" && filepath.Dir(s.path) != "." {
-			// still try write below
 		}
 	}
-	b, err := json.MarshalIndent(s.data, "", "  ")
+	encData := Cache{Accounts: make([]AccountToken, len(s.data.Accounts))}
+	for i, a := range s.data.Accounts {
+		encData.Accounts[i] = a
+		if a.RefreshToken != "" {
+			enc, err := encryptRefreshToken(a.RefreshToken)
+			if err != nil {
+				return err
+			}
+			encData.Accounts[i].RefreshToken = enc
+		}
+	}
+	b, err := json.MarshalIndent(encData, "", "  ")
 	if err != nil {
 		return err
 	}
-	return atomicWrite(s.path, b, 0o600)
+	return writeFileAtomic(s.path, b, 0o600)
 }
 
 func atomicWrite(path string, b []byte, perm os.FileMode) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, perm); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return writeFileAtomic(path, b, perm)
 }
 
 func (s *Store) List() []AccountToken {
@@ -275,7 +430,6 @@ func (s *Store) First() (AccountToken, bool) {
 	return s.data.Accounts[0], true
 }
 
-// Next returns the next account in round-robin order.
 func (s *Store) Next() (AccountToken, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -323,9 +477,6 @@ func (s *Store) EnsureValid(id string) (AccountToken, error) {
 	return s.refreshInflight(acc)
 }
 
-// refreshInflight runs the AAD token refresh exactly once per account; waiters
-// block on the shared flight instead of redeeming the one-time refresh token
-// themselves. The winner's outcome is broadcast to all waiters.
 func (s *Store) refreshInflight(acc AccountToken) (AccountToken, error) {
 	s.mu.Lock()
 	if s.inflight == nil {
@@ -339,7 +490,6 @@ func (s *Store) refreshInflight(acc AccountToken) (AccountToken, error) {
 	f := &inflightRefresh{done: make(chan struct{})}
 	s.inflight[acc.ID] = f
 	s.mu.Unlock()
-
 	endpoint := TokenEndpoint()
 	if acc.ClientID == DeviceClientID() {
 		endpoint = DeviceTokenEndpoint()
@@ -378,9 +528,7 @@ func (s *Store) refreshInflight(acc AccountToken) (AccountToken, error) {
 	return f.acc, f.err
 }
 
-func fmtExpired() error {
-	return errors.New("token_expired: refresh token missing or expired")
-}
+func fmtExpired() error { return errors.New("token_expired: refresh token missing or expired") }
 
 func (s *Store) RefreshAllExpired() []TokenRefreshResult {
 	s.mu.Lock()

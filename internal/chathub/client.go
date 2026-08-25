@@ -61,10 +61,83 @@ func IsContentPolicyBlock(text string) bool {
 type DialError struct {
 	Status     int
 	RetryAfter int
+	Kind       string
+	cause      error
 }
 
 func (e *DialError) Error() string {
+	if e.Kind != "" {
+		if e.cause != nil {
+			return fmt.Sprintf("ws dial: %s upstream %d: %v", e.Kind, e.Status, e.cause)
+		}
+		return fmt.Sprintf("ws dial: %s upstream %d", e.Kind, e.Status)
+	}
+	if e.cause != nil {
+		return fmt.Sprintf("ws dial: upstream %d: %v", e.Status, e.cause)
+	}
 	return fmt.Sprintf("ws dial: upstream %d", e.Status)
+}
+
+func (e *DialError) Unwrap() error { return e.cause }
+
+func classifyTransportError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "socks"):
+		return "SOCKS5"
+	case strings.Contains(msg, "no such host") || strings.Contains(msg, "no address associated") || strings.Contains(msg, "name resolution") || strings.Contains(msg, "dns"):
+		return "DNS"
+	case strings.Contains(msg, "tls") || strings.Contains(msg, "certificate") || strings.Contains(msg, "x509"):
+		return "TLS"
+	case strings.Contains(msg, "handshake"):
+		return "WS_HANDSHAKE"
+	case strings.Contains(msg, "i/o timeout") || strings.Contains(msg, "deadline exceeded") || strings.Contains(msg, "timeout") && strings.Contains(msg, "read"):
+		return "WS_READ_TIMEOUT"
+	case strings.Contains(msg, "connection refused") || strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") || strings.Contains(msg, "network is unreachable") || strings.Contains(msg, "connection was forcibly closed"):
+		return "TCP"
+	default:
+		if strings.Contains(msg, "timeout") {
+			return "WS_READ_TIMEOUT"
+		}
+		return "TCP"
+	}
+}
+
+func wrapDialError(err error, status int, retryAfter int) *DialError {
+	kind := ""
+	if status == 0 && err != nil {
+		if errors.Is(err, context.Canceled) {
+			kind = "CLIENT_CANCELED"
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			kind = "WS_READ_TIMEOUT"
+		} else {
+			kind = classifyTransportError(err)
+		}
+	}
+	return &DialError{Status: status, RetryAfter: retryAfter, Kind: kind, cause: err}
+}
+
+// Phase is the 7-stage state machine for a ChatHub exchange.
+// Only PayloadSent is zero-side-effect and retriable; once streaming has
+// begun (any text, tool event or reused conversation) failover must not
+// switch accounts.
+type Phase int
+
+const (
+	PhaseInit Phase = iota
+	PhaseDial
+	PhaseHandshake
+	PhaseUpload
+	PhasePayloadSent
+	PhaseStreaming
+	PhaseCompleted
+)
+
+func IsRetriablePhase(p Phase) bool {
+	return p == PhasePayloadSent
 }
 
 var chTrace = os.Getenv("M365_TRACE") == "1"
@@ -97,7 +170,7 @@ const (
 )
 
 // Variants mirrored from the verified browser / Python probe.
-const variants = "EnableMcpServerWidgets,feature.EnableMcpServerWidgets,feature.EnableLuForChatCIQ,feature.enableChatCIQPlugin,EnableRequestPlugins,feature.EnableSensitivityLabels,EnableUnsupportedUrlDetector,feature.IsCustomEngineCopilotEnabled,feature.bizchatfluxv3,feature.enablechatpages,feature.enableCodeCanvas,feature.turnOnWorkTabRecommendation,turnOffWorkTabUpsellFromClient,feature.turnOnDARecommendation,feature.IsStreamingModeInChatRequestEnabled,IncludeSourceAttributionsConcise,SkipPublishEmptyMessage,feature.EnableDeduplicatingSourceAttributions,Enable3PActionProgressMessages,feature.enableClientWebRtc,feature.EnableMeetingRecapOfSeriesMeetingWithCiq,feature.EnableReferencesListCompleteSignal,feature.StorageMessageSplitDisabled,feature.EnableCuaTakeControlApi,feature.cwcallowedos,feature.disabledisallowedmsgs,feature.enableCitationsForSynthesisData,feature.enableGenerateGraphicArtOptionsSet,cdximagen,feature.EnableUpdatedUXForConfirmationDialog,feature.EnableClientFileURLSupportForOfficeWebPaidCopilot,feature.EnableDesignEditorImageGrounding,feature.EnableDesignerEditor,feature.OfficeWebToHelix,feature.OfficeDesktopToHelix,feature.M365TeamsHubToHelix,feature.OwaHubToHelix,feature.MonarchHubToHelix,feature.Win32OutlookHubToHelix,feature.MacOutlookHubToHelix,Agt_bizchat_enableGpt5ForHelix"
+const variants = "EnableMcpServerWidgets,feature.EnableMcpServerWidgets,feature.EnableLuForChatCIQ,feature.enableChatCIQPlugin,EnableRequestPlugins,feature.EnableSensitivityLabels,EnableUnsupportedUrlDetector,feature.IsCustomEngineCopilotEnabled,feature.bizchatfluxv3,feature.enablechatpages,feature.enableCodeCanvas,feature.turnOnWorkTabRecommendation,turnOffWorkTabUpsellFromClient,feature.turnOnDARecommendation,feature.IsStreamingModeInChatRequestEnabled,IncludeSourceAttributionsConcise,SkipPublishEmptyMessage,feature.EnableDeduplicatingSourceAttributions,Enable3PActionProgressMessages,feature.enableClientWebRtc,feature.EnableMeetingRecapOfSeriesMeetingWithCiq,feature.EnableReferencesListCompleteSignal,feature.StorageMessageSplitDisabled,feature.EnableCuaTakeControlApi,feature.cwcallowedos,feature.disabledisallowedmsgs,feature.enableCitationsForSynthesisData,feature.enableGenerateGraphicArtOptionsSet,cdximagen,feature.EnableUpdatedUXForConfirmationDialog,feature.EnableClientFileURLSupportForOfficeWebPaidCopilot,feature.EnableDesignEditorImageGrounding,feature.EnableDesignerEditor,feature.OfficeWebToHelix,feature.OfficeDesktopToHelix,feature.M365TeamsHubToHelix,feature.OwaHubToHelix,feature.MonarchHubToHelix,feature.Win32OutlookHubToHelix,feature.MacOutlookHubToHelix,Agt_bizchat_enableGpt5ForHelix,feature.EnableImageGenInsufficientTokensThrottled,feature.EnableImageGenSystemCapacityThrottled,feature.EnableConversationShareApis,feature.EnableConversationShareApisForMsa,feature.IsCitationsReferencesOutputEnabled,feature.enableDeltaStreamingForReferences,feature.enableIncludeReferencesInDeltaResponse,feature.enablereferencesforagents,feature.EnableMergingPureDeltas,feature.EnableRemoveStreamingMode"
 
 type Account struct {
 	AccessToken string
@@ -121,6 +194,7 @@ type Request struct {
 	Scenario                string
 	ConnectedFederatedIDs   []string
 	FeatureFlags            FeatureFlags
+	DisableMemory           bool
 	Locale                  string
 	Market                  string
 	TimeZone                string
@@ -297,10 +371,12 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		firstTurn = true
 	}
 	requestID := uuid.NewString()
-	wsURL, err := BuildWSURL(acc, req.SessionID, req.ConversationID, requestID, req.LicenseType, req.Scenario)
+	wsURL, err := BuildWSURLWithOptions(acc, req.SessionID, req.ConversationID, requestID, req.LicenseType, req.Scenario, req.DisableMemory)
 	if err != nil {
 		return Result{}, err
 	}
+	phase := PhaseInit
+	_ = phase
 	attachCh := make(chan error, 1)
 	if len(req.Attachments) > 0 {
 		go func() { attachCh <- c.uploadAttachments(ctx, acc, req.ConversationID, req.Attachments) }()
@@ -309,12 +385,16 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	dialStarted := time.Now()
 	var conn *websocket.Conn
 	var reused bool
+	phase = PhaseDial
 
 	if c.Pool != nil {
 		var poolErr error
 		conn, reused, poolErr = c.Pool.Take(ctx, acc.OID, acc.TID, wsURL)
 		if poolErr != nil {
-			return Result{}, fmt.Errorf("ws dial: %w", poolErr)
+			if errors.Is(poolErr, context.Canceled) {
+				return Result{}, &DialError{Status: 0, Kind: "CLIENT_CANCELED", cause: poolErr}
+			}
+			return Result{}, wrapDialError(poolErr, 0, 0)
 		}
 		if reused {
 			go func() {
@@ -332,15 +412,29 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		var resp *http.Response
 		conn, resp, err = c.Dialer.DialContext(ctx, wsURL, c.HTTPHeader.Clone())
 		if err != nil {
-			if resp != nil && (resp.StatusCode == 429 || resp.StatusCode == 401 || resp.StatusCode == 403) {
+			if resp != nil && (resp.StatusCode == 429 || resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 503) {
 				retryAfter := 0
 				if v, _ := strconv.Atoi(resp.Header.Get("Retry-After")); v > 0 {
 					retryAfter = v
 				}
 				log.Printf("chathub ws_dial %d Retry-After=%d", resp.StatusCode, retryAfter)
-				return Result{}, &DialError{Status: resp.StatusCode, RetryAfter: retryAfter}
+				kind := ""
+				switch resp.StatusCode {
+				case 429:
+					kind = "QUOTA_429"
+				case 503:
+					kind = "OVERLOAD_503"
+				case 401:
+					kind = "AUTH_EXPIRED_401"
+				case 403:
+					kind = "FORBIDDEN_403"
+				}
+				return Result{}, &DialError{Status: resp.StatusCode, RetryAfter: retryAfter, Kind: kind, cause: err}
 			}
-			return Result{}, fmt.Errorf("ws dial: %w", err)
+			if errors.Is(err, context.Canceled) {
+				return Result{}, &DialError{Status: 0, Kind: "CLIENT_CANCELED", cause: err}
+			}
+			return Result{}, wrapDialError(err, 0, 0)
 		}
 	}
 	if reused {
@@ -348,6 +442,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	} else {
 		log.Printf("chathub timing ws_dial_ms=%d total_ms=%d reused=false", time.Since(dialStarted).Milliseconds(), time.Since(startedAt).Milliseconds())
 	}
+	phase = PhaseHandshake
 
 	var writeMu sync.Mutex
 	wsWrite := func(msgType int, data []byte) error {
@@ -367,6 +462,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		}
 	}()
 
+	phase = PhaseUpload
 	if len(req.Attachments) > 0 {
 		if attachErr := <-attachCh; attachErr != nil {
 			returnConn = false
@@ -380,11 +476,21 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	if !reused {
 		if err := wsWrite(websocket.TextMessage, []byte(`{"protocol":"json","version":1}`+rs)); err != nil {
 			returnConn = false
-			return Result{}, fmt.Errorf("handshake send: %w", err)
+			if errors.Is(err, context.Canceled) {
+				return Result{}, &DialError{Status: 0, Kind: "CLIENT_CANCELED", cause: err}
+			}
+			return Result{}, &DialError{Status: 0, Kind: "WS_HANDSHAKE", cause: fmt.Errorf("handshake send: %w", err)}
 		}
 		if _, _, err := conn.ReadMessage(); err != nil {
 			returnConn = false
-			return Result{}, fmt.Errorf("handshake recv: %w", err)
+			if errors.Is(err, context.Canceled) {
+				return Result{}, &DialError{Status: 0, Kind: "CLIENT_CANCELED", cause: err}
+			}
+			kind := "WS_HANDSHAKE"
+			if errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "timeout") {
+				kind = "WS_HANDSHAKE"
+			}
+			return Result{}, &DialError{Status: 0, Kind: kind, cause: fmt.Errorf("handshake recv: %w", err)}
 		}
 	}
 
@@ -402,8 +508,12 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	ts := Timestamps{RequestSent: payloadSentAt.UTC().Format(time.RFC3339Nano)}
 	if err := wsWrite(websocket.TextMessage, []byte(payload)); err != nil {
 		returnConn = false
-		return Result{}, fmt.Errorf("chat send: %w", err)
+		if errors.Is(err, context.Canceled) {
+			return Result{}, &DialError{Status: 0, Kind: "CLIENT_CANCELED", cause: err}
+		}
+		return Result{}, &DialError{Status: 0, Kind: classifyTransportError(err), cause: fmt.Errorf("chat send: %w", err)}
 	}
+	phase = PhasePayloadSent
 
 	var deltas []string
 	var streamed strings.Builder
@@ -411,12 +521,16 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		if d == "" {
 			return nil
 		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if chTrace {
 			log.Printf("[trace:emitDelta] len=%d streamed=%d preview=%q", len(d), streamed.Len()+len(d), truncate(d, 80))
 		}
 		if streamed.Len() == 0 {
 			log.Printf("chathub timing first_delta_ms=%d len=%d", time.Since(payloadSentAt).Milliseconds(), len(d))
 			ts.FirstTokenReceived = time.Now().UTC().Format(time.RFC3339Nano)
+			phase = PhaseStreaming
 		}
 		streamed.WriteString(d)
 		deltas = append(deltas, d)
@@ -458,6 +572,12 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		}
 		return IsContentPolicyBlock(text)
 	}
+	// skippedSnapshots counts non-prefix rewrites dropped by emitSnapshot.
+	// Upstream interleaves per-token writeAtCursor fragments with cumulative
+	// snapshots, so bursts of skips are normal; the dropped text is
+	// reconciled against the authoritative final message on completion
+	// (see finalizeText). Logged once as a summary instead of per frame.
+	skippedSnapshots := 0
 	emitSnapshot := func(snapshot string) error {
 		if snapshot == "" {
 			return nil
@@ -484,7 +604,10 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		if len(snapshot) <= len(cur) {
 			return nil
 		}
-		log.Printf("[emitSnapshot] skip: cur=%d snapshot=%d (non-prefix rewrite)", len(cur), len(snapshot))
+		skippedSnapshots++
+		if chTrace {
+			log.Printf("[trace:emitSnapshot] skip: cur=%d snapshot=%d (non-prefix rewrite)", len(cur), len(snapshot))
+		}
 		return nil
 	}
 	var final string
@@ -509,11 +632,20 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		err error
 	}
 	readCh := make(chan wsRead, 8)
+	done := make(chan struct{})
+	defer close(done)
 	go func() {
+		defer close(readCh)
 		for {
 			_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 			_, msg, err := conn.ReadMessage()
-			readCh <- wsRead{msg: msg, err: err}
+			select {
+			case readCh <- wsRead{msg: msg, err: err}:
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			}
 			if err != nil {
 				return
 			}
@@ -524,12 +656,40 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		select {
 		case <-ctx.Done():
 			returnConn = false
-			return Result{}, ctx.Err()
-		case read = <-readCh:
+			_ = conn.Close()
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return Result{}, &DialError{Status: 0, Kind: "CLIENT_CANCELED", cause: ctx.Err()}
+			}
+			return Result{}, &DialError{Status: 0, Kind: "WS_READ_TIMEOUT", cause: ctx.Err()}
+		case r, ok := <-readCh:
+			if !ok {
+				if ctx.Err() != nil {
+					returnConn = false
+					if errors.Is(ctx.Err(), context.Canceled) {
+						return Result{}, &DialError{Status: 0, Kind: "CLIENT_CANCELED", cause: ctx.Err()}
+					}
+					return Result{}, &DialError{Status: 0, Kind: "WS_READ_TIMEOUT", cause: ctx.Err()}
+				}
+				returnConn = false
+				return Result{}, fmt.Errorf("ws read before completion: %w", io.ErrUnexpectedEOF)
+			}
+			read = r
 		}
 		if read.err != nil {
 			returnConn = false
-			return Result{}, fmt.Errorf("ws read before completion: %w", read.err)
+			if errors.Is(read.err, context.Canceled) {
+				return Result{}, &DialError{Status: 0, Kind: "CLIENT_CANCELED", cause: fmt.Errorf("ws read before completion: %w", read.err)}
+			}
+			kind := "WS_READ_TIMEOUT"
+			if strings.Contains(strings.ToLower(read.err.Error()), "timeout") || errors.Is(read.err, context.DeadlineExceeded) {
+				kind = "WS_READ_TIMEOUT"
+			} else {
+				kind = classifyTransportError(read.err)
+				if kind == "TCP" {
+					kind = "WS_READ_TIMEOUT"
+				}
+			}
+			return Result{}, &DialError{Status: 0, Kind: kind, cause: fmt.Errorf("ws read before completion: %w", read.err)}
 		}
 		if !firstServiceResponse {
 			firstServiceResponse = true
@@ -567,11 +727,15 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					}
 					msgs, _ := arg["messages"].([]any)
 					if onEvent != nil {
+						beforeTools := len(seenStreamTools)
 						for _, ev := range extractToolEvents(arg, seenStreamTools) {
 							if err := onEvent(ev); err != nil {
 								returnConn = false
 								return Result{}, err
 							}
+						}
+						if len(seenStreamTools) > beforeTools {
+							phase = PhaseStreaming
 						}
 					}
 
@@ -759,11 +923,21 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					returnConn = false
 					return Result{}, fmt.Errorf("chathub completion error: %v", errObj)
 				}
+				phase = PhaseCompleted
 				ts.LastTokenReceived = time.Now().UTC().Format(time.RFC3339Nano)
-				log.Printf("chathub timing completion_frame_ms=%d streamed_text=%d events=%d", time.Since(payloadSentAt).Milliseconds(), streamed.Len(), len(events))
-				text := streamed.String()
-				if text == "" {
-					text = final
+				log.Printf("chathub timing completion_frame_ms=%d streamed_text=%d events=%d skipped_snapshots=%d", time.Since(payloadSentAt).Milliseconds(), streamed.Len(), len(events), skippedSnapshots)
+				// Guard against streaming a rate-limit notice out as content
+				// before finalizeText delivers a missing tail. The type-2
+				// handler already rejects notice finals, so this only fires
+				// on frame-order anomalies.
+				if rateLimited(final) {
+					returnConn = false
+					return Result{}, ErrRateLimitNotice
+				}
+				text, ferr := finalizeText(streamed.String(), final, skippedSnapshots, emitDelta)
+				if ferr != nil {
+					returnConn = false
+					return Result{}, ferr
 				}
 				if text == "" {
 					text = strings.Join(deltas, "")
@@ -832,7 +1006,43 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	return Result{}, fmt.Errorf("chathub response deadline exceeded before completion")
 }
 
+// finalizeText reconciles the incrementally streamed text with the
+// authoritative final message carried by the SignalR type-2 result frame.
+//
+// emitSnapshot drops non-prefix rewrites to stay UTF-8 safe, which can leave
+// the streamed buffer incomplete — or, when an early fragment poisoned the
+// prefix check, diverged from the real answer (issue #51). The final message
+// is upstream's source of truth, so:
+//
+//   - final no longer than streamed → keep the streamed text;
+//   - streamed is a proper prefix of final → the stream missed the tail;
+//     emit the missing part so streaming clients also receive the complete
+//     answer, then return final;
+//   - otherwise → the streamed prefix diverged; already-sent deltas cannot
+//     be retracted, but final is returned as the Result text so non-stream
+//     callers and conversation history stay correct.
+func finalizeText(streamedText, final string, skipped int, emit func(string) error) (string, error) {
+	if final == "" || len(final) <= len(streamedText) {
+		if streamedText == "" {
+			return final, nil
+		}
+		return streamedText, nil
+	}
+	if strings.HasPrefix(final, streamedText) {
+		if err := emit(final[len(streamedText):]); err != nil {
+			return "", err
+		}
+		return final, nil
+	}
+	log.Printf("[emitSnapshot] streamed text diverged from final result (streamed=%d final=%d skipped_snapshots=%d); using final", len(streamedText), len(final), skipped)
+	return final, nil
+}
+
 func BuildWSURL(acc Account, sessionID, conversationID, requestID, licenseType, scenario string) (string, error) {
+	return BuildWSURLWithOptions(acc, sessionID, conversationID, requestID, licenseType, scenario, false)
+}
+
+func BuildWSURLWithOptions(acc Account, sessionID, conversationID, requestID, licenseType, scenario string, disableMemory bool) (string, error) {
 	q := url.Values{}
 	q.Set("chatsessionid", requestID)
 	q.Set("clientrequestid", requestID)
@@ -856,6 +1066,10 @@ func BuildWSURL(acc Account, sessionID, conversationID, requestID, licenseType, 
 	} else {
 		q.Set("scenario", "OfficeWebIncludedCopilot")
 	}
+	if disableMemory {
+		q.Set("disableMemory", "1")
+	}
+	q.Set("isEdu", "false")
 
 	// url.Values encodes quotes; probe used safe='",' so keep quotes unescaped-ish.
 	// Gorilla/url will encode " to %22 which MS accepts.

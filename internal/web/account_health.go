@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,9 +12,25 @@ import (
 	"m365-copilot2api/internal/chathub"
 )
 
-// UpstreamHTTPError carries the HTTP status of a failed upstream request so
-// callers can distinguish rate limiting (429), authorization issues (401/403)
-// and transient server errors (5xx) from one another.
+type ErrorCategory string
+
+const (
+	CategoryQuota429          ErrorCategory = "QUOTA_429"
+	CategoryOverload503       ErrorCategory = "OVERLOAD_503"
+	CategoryAuthExpired401    ErrorCategory = "AUTH_EXPIRED_401"
+	CategoryForbidden403      ErrorCategory = "FORBIDDEN_403"
+	CategorySOCKS5            ErrorCategory = "SOCKS5"
+	CategoryDNS               ErrorCategory = "DNS"
+	CategoryTCP               ErrorCategory = "TCP"
+	CategoryTLS               ErrorCategory = "TLS"
+	CategoryWSHandshake       ErrorCategory = "WS_HANDSHAKE"
+	CategoryWSReadTimeout     ErrorCategory = "WS_READ_TIMEOUT"
+	CategoryUpstreamStructured ErrorCategory = "UPSTREAM_STRUCTURED"
+	CategoryClientCanceled    ErrorCategory = "CLIENT_CANCELED"
+	CategoryGlobalUnavailable ErrorCategory = "GLOBAL_UNAVAILABLE"
+	CategoryUnknown           ErrorCategory = "UNKNOWN"
+)
+
 type UpstreamHTTPError struct {
 	Status     int
 	RetryAfter int
@@ -24,9 +41,121 @@ func (e *UpstreamHTTPError) Error() string {
 	return fmt.Sprintf("upstream http %d", e.Status)
 }
 
-// IsRateLimited reports whether err represents an upstream 429 or an
-// indistinguishable throttling signal (rate limit, too many requests,
-// throttled).
+func ClassifyError(err error) ErrorCategory {
+	if err == nil {
+		return CategoryUnknown
+	}
+	if errors.Is(err, context.Canceled) {
+		return CategoryClientCanceled
+	}
+	if errors.Is(err, chathub.ErrRateLimitNotice) {
+		return CategoryQuota429
+	}
+	if errors.Is(err, chathub.ErrEmptyCompletion) || errors.Is(err, chathub.ErrOffensiveContent) || errors.Is(err, chathub.ErrImageLimit) {
+		return CategoryUpstreamStructured
+	}
+	var httpErr *UpstreamHTTPError
+	if errors.As(err, &httpErr) {
+		switch httpErr.Status {
+		case 429:
+			return CategoryQuota429
+		case 503:
+			return CategoryOverload503
+		case 401:
+			return CategoryAuthExpired401
+		case 403:
+			return CategoryForbidden403
+		}
+		if strings.Contains(strings.ToLower(httpErr.Body), "limited") {
+			return CategoryQuota429
+		}
+	}
+	var dialErr *chathub.DialError
+	if errors.As(err, &dialErr) {
+		if dialErr.Kind != "" {
+			switch dialErr.Kind {
+			case "QUOTA_429":
+				return CategoryQuota429
+			case "OVERLOAD_503":
+				return CategoryOverload503
+			case "AUTH_EXPIRED_401":
+				return CategoryAuthExpired401
+			case "FORBIDDEN_403":
+				return CategoryForbidden403
+			case "SOCKS5":
+				return CategorySOCKS5
+			case "DNS":
+				return CategoryDNS
+			case "TCP":
+				return CategoryTCP
+			case "TLS":
+				return CategoryTLS
+			case "WS_HANDSHAKE":
+				return CategoryWSHandshake
+			case "WS_READ_TIMEOUT":
+				return CategoryWSReadTimeout
+			case "CLIENT_CANCELED":
+				return CategoryClientCanceled
+			}
+		}
+		switch dialErr.Status {
+		case 429:
+			return CategoryQuota429
+		case 503:
+			return CategoryOverload503
+		case 401:
+			return CategoryAuthExpired401
+		case 403:
+			return CategoryForbidden403
+		}
+		if dialErr.Kind != "" {
+			return ErrorCategory(dialErr.Kind)
+		}
+		if dialErr.Status == 0 {
+			msg := strings.ToLower(dialErr.Error())
+			if strings.Contains(msg, "socks") {
+				return CategorySOCKS5
+			}
+			if strings.Contains(msg, "no such host") || strings.Contains(msg, "dns") {
+				return CategoryDNS
+			}
+			if strings.Contains(msg, "tls") || strings.Contains(msg, "certificate") || strings.Contains(msg, "x509") {
+				return CategoryTLS
+			}
+			if strings.Contains(msg, "handshake") {
+				return CategoryWSHandshake
+			}
+			if strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline") {
+				return CategoryWSReadTimeout
+			}
+			return CategoryTCP
+		}
+	}
+	if globalCircuit != nil && globalCircuit.IsOpen() {
+		return CategoryGlobalUnavailable
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "socks"):
+		return CategorySOCKS5
+	case strings.Contains(msg, "no such host") || strings.Contains(msg, "name resolution") || (strings.Contains(msg, "dns") && !strings.Contains(msg, "limited")):
+		return CategoryDNS
+	case strings.Contains(msg, "tls") || strings.Contains(msg, "certificate") || strings.Contains(msg, "x509"):
+		return CategoryTLS
+	case strings.Contains(msg, "handshake"):
+		return CategoryWSHandshake
+	case strings.Contains(msg, "ws read") || (strings.Contains(msg, "timeout") && strings.Contains(msg, "read")) || strings.Contains(msg, "deadline exceeded"):
+		return CategoryWSReadTimeout
+	case strings.Contains(msg, "connection refused") || strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") || strings.Contains(msg, "network is unreachable"):
+		return CategoryTCP
+	case strings.Contains(msg, "client canceled") || strings.Contains(msg, "context canceled"):
+		return CategoryClientCanceled
+	case strings.Contains(msg, "empty completion") || strings.Contains(msg, "offensive") || strings.Contains(msg, "image limit"):
+		return CategoryUpstreamStructured
+	}
+	return CategoryUnknown
+}
+
 func IsRateLimited(err error) bool {
 	if err == nil {
 		return false
@@ -45,13 +174,16 @@ func IsRateLimited(err error) bool {
 	}
 	var dialErr *chathub.DialError
 	if errors.As(err, &dialErr) {
-		return dialErr.Status == 429 || dialErr.Status == 503
+		if dialErr.Status == 429 || dialErr.Status == 503 {
+			return true
+		}
+		if dialErr.Kind == "QUOTA_429" || dialErr.Kind == "OVERLOAD_503" {
+			return true
+		}
 	}
 	return false
 }
 
-// IsAuthFailure reports whether err represents an upstream 401/403, meaning
-// the account itself is unusable until re-authenticated.
 func IsAuthFailure(err error) bool {
 	if err == nil {
 		return false
@@ -62,7 +194,7 @@ func IsAuthFailure(err error) bool {
 	}
 	var dialErr *chathub.DialError
 	if errors.As(err, &dialErr) {
-		return dialErr.Status == 401 || dialErr.Status == 403
+		return dialErr.Status == 401 || dialErr.Status == 403 || dialErr.Kind == "AUTH_EXPIRED_401" || dialErr.Kind == "FORBIDDEN_403"
 	}
 	return false
 }
@@ -71,9 +203,6 @@ func IsEmptyCompletion(err error) bool {
 	return errors.Is(err, chathub.ErrEmptyCompletion)
 }
 
-// RetryAfterSeconds returns the upstream Retry-After hint for a rate-limited
-// error, or 0 when absent. The web layer surfaces this to clients so they can
-// back off instead of hammering a throttled pool.
 func RetryAfterSeconds(err error) int {
 	var httpErr *UpstreamHTTPError
 	if errors.As(err, &httpErr) {
@@ -86,9 +215,154 @@ func RetryAfterSeconds(err error) int {
 	return 0
 }
 
-// accountHealth tracks per-account failure state: rate-limited accounts are
-// cooled down and skipped by the round-robin until the window expires, and
-// auth-failed accounts are pinned as unusable.
+func CooldownForCategory(cat ErrorCategory, retryAfter int, attempt int) time.Duration {
+	switch cat {
+	case CategoryQuota429:
+		if retryAfter > 0 {
+			d := time.Duration(retryAfter) * time.Second
+			if d > 30*time.Minute {
+				d = 30 * time.Minute
+			}
+			return d
+		}
+		if attempt < 1 {
+			attempt = 1
+		}
+		if attempt > 7 {
+			attempt = 7
+		}
+		d := 30 * time.Second * time.Duration(1<<(attempt-1))
+		if d > 30*time.Minute || d <= 0 {
+			d = 30 * time.Minute
+		}
+		return d
+	case CategoryOverload503:
+		return 15 * time.Second
+	case CategoryAuthExpired401:
+		return 2 * time.Minute
+	case CategoryForbidden403:
+		return 24 * time.Hour
+	case CategorySOCKS5:
+		return 30 * time.Second
+	case CategoryDNS:
+		return 30 * time.Second
+	case CategoryTCP:
+		return 15 * time.Second
+	case CategoryTLS:
+		return 30 * time.Second
+	case CategoryWSHandshake:
+		return 15 * time.Second
+	case CategoryWSReadTimeout:
+		return 30 * time.Second
+	case CategoryUpstreamStructured:
+		return 10 * time.Second
+	case CategoryClientCanceled:
+		return 0
+	case CategoryGlobalUnavailable:
+		return 15 * time.Second
+	default:
+		return 15 * time.Second
+	}
+}
+
+type globalCircuitState struct {
+	mu        sync.Mutex
+	windowStart time.Time
+	total     int
+	failures  int
+	openUntil time.Time
+}
+
+var globalCircuit = &globalCircuitState{}
+
+func (g *globalCircuitState) IsOpen() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.openUntil.IsZero() {
+		return false
+	}
+	if time.Now().Before(g.openUntil) {
+		return true
+	}
+	g.openUntil = time.Time{}
+	return false
+}
+
+func (g *globalCircuitState) OpenUntil() time.Time {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.openUntil
+}
+
+func (g *globalCircuitState) State() string {
+	if g.IsOpen() {
+		return "open"
+	}
+	return "closed"
+}
+
+func (g *globalCircuitState) Record(err error) {
+	if err == nil {
+		g.mu.Lock()
+		now := time.Now()
+		if g.windowStart.IsZero() || now.Sub(g.windowStart) > 30*time.Second {
+			g.windowStart = now
+			g.total = 0
+			g.failures = 0
+		}
+		g.total++
+		if g.total > 1000 {
+			g.windowStart = now
+			g.total = 1
+			g.failures = 0
+		}
+		if g.total >= 10 && g.failures*2 >= g.total {
+			g.openUntil = now.Add(30 * time.Second)
+		}
+		g.mu.Unlock()
+		return
+	}
+	cat := ClassifyError(err)
+	if cat == CategoryClientCanceled || cat == CategoryGlobalUnavailable {
+		// Client cancels are not upstream faults. Failures already classified
+		// as GLOBAL_UNAVAILABLE must not re-arm the circuit, otherwise traffic
+		// rejected while the circuit is open keeps renewing openUntil forever
+		// and the circuit can never close.
+		return
+	}
+	g.mu.Lock()
+	now := time.Now()
+	if g.windowStart.IsZero() || now.Sub(g.windowStart) > 30*time.Second {
+		g.windowStart = now
+		g.total = 0
+		g.failures = 0
+	}
+	g.total++
+	g.failures++
+	if g.total >= 10 && g.failures*2 >= g.total {
+		g.openUntil = now.Add(30 * time.Second)
+	}
+	if g.total > 1000 {
+		g.windowStart = now
+		g.total = 1
+		g.failures = 1
+	}
+	g.mu.Unlock()
+}
+
+func GlobalCircuitIsOpen() bool { return globalCircuit.IsOpen() }
+func GlobalCircuitState() string { return globalCircuit.State() }
+func GlobalCircuitOpenUntil() time.Time { return globalCircuit.OpenUntil() }
+func GlobalCircuitRecord(err error) { globalCircuit.Record(err) }
+func ResetGlobalCircuit() {
+	globalCircuit.mu.Lock()
+	globalCircuit.windowStart = time.Time{}
+	globalCircuit.total = 0
+	globalCircuit.failures = 0
+	globalCircuit.openUntil = time.Time{}
+	globalCircuit.mu.Unlock()
+}
+
 type accountHealth struct {
 	mu              sync.Mutex
 	cooldown        map[string]time.Time
@@ -99,9 +373,11 @@ type accountHealth struct {
 	imageLimitUntil map[string]time.Time
 	lastThrottling  map[string]any
 	authFailReason  map[string]string
+	quotaAttempts   map[string]int
 }
 
 func newAccountHealth() *accountHealth {
+	ResetGlobalCircuit()
 	return &accountHealth{
 		cooldown:        map[string]time.Time{},
 		authFail:        map[string]bool{},
@@ -111,6 +387,7 @@ func newAccountHealth() *accountHealth {
 		imageLimitUntil: map[string]time.Time{},
 		lastThrottling:  map[string]any{},
 		authFailReason:  map[string]string{},
+		quotaAttempts:   map[string]int{},
 	}
 }
 
@@ -128,6 +405,7 @@ func (h *accountHealth) cleanupExpiredCooldownLocked(accountID string) {
 	if wasRateLimited {
 		delete(h.calls, accountID)
 	}
+	delete(h.quotaAttempts, accountID)
 }
 
 func (h *accountHealth) MarkCall(accountID string) {
@@ -179,8 +457,8 @@ func (h *accountHealth) ImageLimited(accountID string) bool {
 	defer h.mu.Unlock()
 	if h.imageLimited[accountID] {
 		if until, ok := h.imageLimitUntil[accountID]; ok && time.Now().After(until) {
-	delete(h.imageLimited, accountID)
-	delete(h.imageLimitUntil, accountID)
+			delete(h.imageLimited, accountID)
+			delete(h.imageLimitUntil, accountID)
 			delete(h.imageLimitUntil, accountID)
 		}
 	}
@@ -231,13 +509,22 @@ func (h *accountHealth) MarkFailure(accountID string, err error, window time.Dur
 	if window <= 0 {
 		window = 60 * time.Second
 	}
+	cat := ClassifyError(err)
+	GlobalCircuitRecord(err)
+	if cat == CategoryClientCanceled {
+		return
+	}
+	if cat == CategoryGlobalUnavailable {
+		h.mu.Lock()
+		h.cooldown[accountID] = time.Now().Add(CooldownForCategory(cat, 0, 1))
+		h.mu.Unlock()
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if IsAuthFailure(err) {
-		cooldown := window
-		if cooldown > 2*time.Minute {
-			cooldown = 2 * time.Minute
-		}
+	switch cat {
+	case CategoryAuthExpired401:
+		cooldown := CooldownForCategory(cat, 0, 1)
 		h.cooldown[accountID] = time.Now().Add(cooldown)
 		h.authFail[accountID] = true
 		delete(h.limited, accountID)
@@ -247,29 +534,66 @@ func (h *accountHealth) MarkFailure(accountID string, err error, window time.Dur
 		} else {
 			var dialErr *chathub.DialError
 			if errors.As(err, &dialErr) {
-				h.authFailReason[accountID] = fmt.Sprintf("%d", dialErr.Status)
+				if dialErr.Status != 0 {
+					h.authFailReason[accountID] = fmt.Sprintf("%d", dialErr.Status)
+				} else {
+					h.authFailReason[accountID] = "401"
+				}
 			} else {
 				h.authFailReason[accountID] = "401"
 			}
 		}
 		return
-	}
-	if IsRateLimited(err) {
+	case CategoryForbidden403:
+		h.cooldown[accountID] = time.Now().Add(CooldownForCategory(cat, 0, 1))
+		h.authFail[accountID] = true
+		delete(h.limited, accountID)
+		h.authFailReason[accountID] = "403"
+		var httpErr *UpstreamHTTPError
+		if errors.As(err, &httpErr) {
+			h.authFailReason[accountID] = fmt.Sprintf("%d", httpErr.Status)
+		} else {
+			var dialErr *chathub.DialError
+			if errors.As(err, &dialErr) && dialErr.Status != 0 {
+				h.authFailReason[accountID] = fmt.Sprintf("%d", dialErr.Status)
+			}
+		}
+		return
+	case CategoryQuota429:
 		delete(h.authFail, accountID)
 		delete(h.authFailReason, accountID)
 		h.limited[accountID] = true
+		attempt := h.quotaAttempts[accountID] + 1
+		h.quotaAttempts[accountID] = attempt
+		cd := CooldownForCategory(cat, RetryAfterSeconds(err), attempt)
+		h.cooldown[accountID] = time.Now().Add(cd)
+		return
+	case CategoryOverload503:
+		delete(h.authFail, accountID)
+		delete(h.authFailReason, accountID)
+		h.cooldown[accountID] = time.Now().Add(CooldownForCategory(cat, RetryAfterSeconds(err), 1))
+		return
+	case CategorySOCKS5, CategoryDNS, CategoryTCP, CategoryTLS, CategoryWSHandshake, CategoryWSReadTimeout:
+		delete(h.authFail, accountID)
+		delete(h.authFailReason, accountID)
+		cd := CooldownForCategory(cat, 0, 1)
+		h.cooldown[accountID] = time.Now().Add(cd)
+		return
+	case CategoryUpstreamStructured:
+		cd := CooldownForCategory(cat, 0, 1)
+		h.cooldown[accountID] = time.Now().Add(cd)
+		return
+	default:
+		delete(h.authFail, accountID)
+		delete(h.authFailReason, accountID)
 		cd := window
-		if ra := RetryAfterSeconds(err); ra > 0 {
-			cd = time.Duration(ra) * time.Second
-			if cd > 30*time.Minute {
-				cd = 30 * time.Minute
-			}
+		if cd > 30*time.Second {
+			cd = 30 * time.Second
 		}
 		h.cooldown[accountID] = time.Now().Add(cd)
 	}
 }
 
-// MarkSuccess clears any failure state after a healthy response.
 func (h *accountHealth) MarkSuccess(accountID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -279,6 +603,8 @@ func (h *accountHealth) MarkSuccess(accountID string) {
 	delete(h.authFail, accountID)
 	delete(h.limited, accountID)
 	delete(h.authFailReason, accountID)
+	delete(h.quotaAttempts, accountID)
+	GlobalCircuitRecord(nil)
 	if imageLimited && time.Now().Before(imageLimitUntil) {
 		h.imageLimited[accountID] = true
 		h.imageLimitUntil[accountID] = imageLimitUntil
@@ -289,11 +615,13 @@ func (h *accountHealth) MarkSuccess(accountID string) {
 	}
 }
 
-// Available reports whether the account may be used right now.
 func (h *accountHealth) Available(accountID string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.cleanupExpiredCooldownLocked(accountID)
+	if GlobalCircuitIsOpen() {
+		return false
+	}
 	if h.authFail[accountID] {
 		return false
 	}
@@ -317,7 +645,6 @@ func (h *accountHealth) CooldownUntil(accountID string) (time.Time, bool) {
 	return until, true
 }
 
-// Snapshot returns a copy of the current health state for the admin UI.
 func (h *accountHealth) Snapshot() map[string]map[string]any {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -341,12 +668,18 @@ func (h *accountHealth) Snapshot() map[string]map[string]any {
 	for id := range h.calls {
 		ids[id] = true
 	}
+	for id := range h.quotaAttempts {
+		ids[id] = true
+	}
 	for id := range ids {
 		h.cleanupExpiredCooldownLocked(id)
 		m := map[string]any{}
 		if until, ok := h.cooldown[id]; ok {
 			m["available"] = time.Now().After(until)
 			m["cooldownUntil"] = until
+			if catAttempts, ok := h.quotaAttempts[id]; ok && catAttempts > 0 {
+				m["quotaAttempts"] = catAttempts
+			}
 		} else {
 			m["available"] = true
 		}
@@ -368,7 +701,13 @@ func (h *accountHealth) Snapshot() map[string]map[string]any {
 		if c := h.calls[id]; c > 0 {
 			m["calls"] = c
 		}
+		if GlobalCircuitIsOpen() {
+			m["globalCircuit"] = "open"
+		}
 		out[id] = m
+	}
+	if GlobalCircuitIsOpen() {
+		out["_global"] = map[string]any{"globalCircuit": "open", "openUntil": GlobalCircuitOpenUntil()}
 	}
 	return out
 }
@@ -384,10 +723,10 @@ func (h *accountHealth) ClearAllCooldowns() {
 	h.imageLimitUntil = map[string]time.Time{}
 	h.lastThrottling = map[string]any{}
 	h.authFailReason = map[string]string{}
+	h.quotaAttempts = map[string]int{}
+	ResetGlobalCircuit()
 }
 
-// EarliestRecovery returns the earliest time at which any account may become
-// available again. Used to populate Retry-After when all accounts are cooling.
 func (h *accountHealth) EarliestRecovery() time.Time {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -400,6 +739,11 @@ func (h *accountHealth) EarliestRecovery() time.Time {
 		if first || until.Before(earliest) {
 			earliest = until
 			first = false
+		}
+	}
+	if GlobalCircuitIsOpen() {
+		if gu := GlobalCircuitOpenUntil(); !gu.IsZero() && (earliest.IsZero() || gu.Before(earliest)) {
+			earliest = gu
 		}
 	}
 	return earliest

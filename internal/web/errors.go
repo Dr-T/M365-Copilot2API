@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"m365-copilot2api/internal/auth"
 	"m365-copilot2api/internal/chathub"
@@ -50,18 +51,95 @@ func upstreamStatus(err error) int {
 	return http.StatusBadGateway
 }
 
-// writeUpstreamError renders a failed upstream call as an HTTP response,
-// surfacing the Retry-After hint for rate limits so clients can back off.
-func writeUpstreamError(w http.ResponseWriter, err error) {
+func applyM365Headers(w http.ResponseWriter, err error, accountID string) {
+	cat := ClassifyError(err)
+	if accountID != "" {
+		w.Header().Set("X-M365-Account-Id", accountID)
+	} else {
+		w.Header().Set("X-M365-Account-Id", "")
+	}
+	w.Header().Set("X-M365-Proxy-Error", string(cat))
+	if GlobalCircuitIsOpen() {
+		remaining := int(time.Until(GlobalCircuitOpenUntil()).Seconds())
+		if remaining < 0 {
+			remaining = 0
+		}
+		w.Header().Set("X-M365-Global-Circuit", fmt.Sprintf("open; retry-after=%d", remaining))
+	} else {
+		w.Header().Set("X-M365-Global-Circuit", "closed")
+	}
+	if retry := RetryAfterSeconds(err); retry > 0 {
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", retry))
+		w.Header().Set("X-M365-Retry-After", fmt.Sprintf("%d", retry))
+		w.Header().Set("X-M365-RateLimit-Reset", fmt.Sprintf("%d", time.Now().Add(time.Duration(retry)*time.Second).Unix()))
+	} else {
+		switch cat {
+		case CategoryQuota429:
+			w.Header().Set("X-M365-Retry-After", "30")
+			w.Header().Set("X-M365-RateLimit-Reset", fmt.Sprintf("%d", time.Now().Add(30*time.Second).Unix()))
+		case CategoryOverload503:
+			w.Header().Set("X-M365-Retry-After", "15")
+			w.Header().Set("X-M365-RateLimit-Reset", fmt.Sprintf("%d", time.Now().Add(15*time.Second).Unix()))
+		case CategoryAuthExpired401:
+			w.Header().Set("X-M365-Retry-After", "120")
+			w.Header().Set("X-M365-RateLimit-Reset", fmt.Sprintf("%d", time.Now().Add(2*time.Minute).Unix()))
+		case CategoryForbidden403:
+			w.Header().Set("X-M365-Retry-After", "86400")
+			w.Header().Set("X-M365-RateLimit-Reset", fmt.Sprintf("%d", time.Now().Add(24*time.Hour).Unix()))
+		}
+	}
+	if IsRateLimited(err) {
+		w.Header().Set("X-M365-RateLimit-Remaining", "0")
+	} else {
+		w.Header().Set("X-M365-RateLimit-Remaining", "1")
+	}
+}
+
+func writeUpstreamErrorWithAccount(w http.ResponseWriter, err error, accountID string) {
+	applyM365Headers(w, err, accountID)
 	if retry := RetryAfterSeconds(err); retry > 0 {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", retry))
 	}
 	status := upstreamStatus(err)
 	if status == http.StatusTooManyRequests {
 		if w.Header().Get("Retry-After") == "" {
-			// Fallback: the configurable cooldown is in Server.getRateLimitCooldown(),
-			// but this function doesn't have access to settings. 30s is the default.
 			w.Header().Set("Retry-After", "30")
+		}
+		if w.Header().Get("X-M365-Retry-After") == "" {
+			w.Header().Set("X-M365-Retry-After", w.Header().Get("Retry-After"))
+		}
+		if errors.Is(err, chathub.ErrImageLimit) {
+			writeOpenAIError(w, status, "image_limit_error", "image generation daily limit reached; try again tomorrow")
+			return
+		}
+		writeOpenAIError(w, status, "rate_limit_error", "upstream is rate limiting; try again shortly")
+		return
+	}
+	if IsEmptyCompletion(err) {
+		writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "upstream returned empty completion; the requested model may be unavailable for this tenant")
+		return
+	}
+	if errors.Is(err, chathub.ErrOffensiveContent) {
+		writeOpenAIError(w, http.StatusServiceUnavailable, "upstream_content_blocked", "M365 content policy blocked this request; try again or switch account")
+		return
+	}
+	writeOpenAIError(w, status, "upstream_error", upstreamError(err))
+}
+
+// writeUpstreamError renders a failed upstream call as an HTTP response,
+// surfacing the Retry-After hint for rate limits so clients can back off.
+func writeUpstreamError(w http.ResponseWriter, err error) {
+	applyM365Headers(w, err, "")
+	if retry := RetryAfterSeconds(err); retry > 0 {
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", retry))
+	}
+	status := upstreamStatus(err)
+	if status == http.StatusTooManyRequests {
+		if w.Header().Get("Retry-After") == "" {
+			w.Header().Set("Retry-After", "30")
+		}
+		if w.Header().Get("X-M365-Retry-After") == "" {
+			w.Header().Set("X-M365-Retry-After", w.Header().Get("Retry-After"))
 		}
 		if errors.Is(err, chathub.ErrImageLimit) {
 			writeOpenAIError(w, status, "image_limit_error", "image generation daily limit reached; try again tomorrow")

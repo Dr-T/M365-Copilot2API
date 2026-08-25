@@ -363,6 +363,7 @@ func (sr *sessionResolver) matchContextLocked(tenant, ipFinger string, messages 
 
 // contextPrefixLen 杩斿洖 hist 鏄惁涓ユ牸鏄?msgs 鐨勫墠缂€銆俬ist 涓虹┖鎴栦笉鏄墠缂€
 // 鏃惰繑鍥?0锛涘懡涓椂杩斿洖 len(hist)锛屽嵆澧為噺鍙戦€佽捣鐐广€?
+// atom 杈圭晫妫€鏌ワ細hist 蹇呴』鍦?msgs 鐨勫師瀛愯竟鐣屼笂缁撴潫锛屽惁鍒欒涓洪潪鍘熷瓙鍒囧壊鑰岃繑鍥?0銆?
 func contextPrefixLen(hist, msgs []oaiMsg) int {
 	if len(hist) == 0 || len(msgs) < len(hist) {
 		return 0
@@ -371,6 +372,20 @@ func contextPrefixLen(hist, msgs []oaiMsg) int {
 		if !messagesEqual(hist[i], msgs[i]) {
 			return 0
 		}
+	}
+	atoms := buildAtoms(msgs)
+	boundary := false
+	for _, a := range atoms {
+		if a.End == len(hist) {
+			boundary = true
+			break
+		}
+		if a.End > len(hist) {
+			break
+		}
+	}
+	if !boundary {
+		return 0
 	}
 	return len(hist)
 }
@@ -573,11 +588,34 @@ func (sr *sessionResolver) UnbindByConversation(conversationID string) int {
 }
 
 func cloneMessages(msgs []oaiMsg) []oaiMsg {
-	if len(msgs) > 512 {
-		msgs = msgs[len(msgs)-512:]
+	if len(msgs) <= 512 {
+		out := make([]oaiMsg, len(msgs))
+		copy(out, msgs)
+		return out
 	}
-	out := make([]oaiMsg, len(msgs))
-	copy(out, msgs)
+	atoms := buildAtoms(msgs)
+	if len(atoms) == 0 {
+		msgs = msgs[len(msgs)-512:]
+		out := make([]oaiMsg, len(msgs))
+		copy(out, msgs)
+		return out
+	}
+	count := 0
+	startIdx := len(msgs)
+	for i := len(atoms) - 1; i >= 0; i-- {
+		c := atoms[i].End - atoms[i].Start
+		if count+c > 512 {
+			break
+		}
+		count += c
+		startIdx = atoms[i].Start
+	}
+	if count == 0 {
+		startIdx = atoms[len(atoms)-1].Start
+	}
+	sliced := msgs[startIdx:]
+	out := make([]oaiMsg, len(sliced))
+	copy(out, sliced)
 	return out
 }
 

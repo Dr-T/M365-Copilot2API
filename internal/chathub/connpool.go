@@ -123,17 +123,9 @@ func (p *ConnPool) Warm(ctx context.Context, acc Account, wsURL string) {
 }
 
 func (p *ConnPool) Return(oid, tid string, conn *websocket.Conn) {
-	if conn == nil {
-		return
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	k := p.key(oid, tid)
-	if len(p.conns[k]) >= maxPoolPerKey {
+	if conn != nil {
 		conn.Close()
-		return
 	}
-	p.conns[k] = append(p.conns[k], &pooledConn{conn: conn, created: time.Now(), handshook: true})
 }
 
 func (p *ConnPool) Discard(oid, tid string, conn *websocket.Conn) {

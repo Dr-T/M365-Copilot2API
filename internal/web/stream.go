@@ -97,6 +97,23 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "stream unsupported")
 		return
 	}
+	sw := newSSEWriter(w, flusher)
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	keepaliveDone := make(chan struct{})
+	defer close(keepaliveDone)
+	go func() {
+		for {
+			select {
+			case <-keepaliveDone:
+				return
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+				_ = sw.raw(": keepalive\n\n")
+			}
+		}
+	}()
 	for i, event := range res.Normalized {
 		payload := map[string]any{
 			"index":          i,
@@ -125,6 +142,9 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 		"timestamps": res.Timestamps,
 	}); err != nil {
 		return
+	}
+	if res.Timestamps.RequestSent != "" {
+		_ = sw.raw(": m365-metrics " + mustJSON(res.Timestamps) + "\n\n")
 	}
 }
 
