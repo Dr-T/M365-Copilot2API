@@ -161,7 +161,7 @@ func minInt(a, b int) int {
 
 const (
 	rs          = "\x1e"
-	defaultTone = "magic"
+	defaultTone = "Magic"
 	wsBase      = "wss://substrate.office.com/m365Copilot/Chathub"
 	// maxAttachments bounds per-request remote downloads: each image is
 	// base64-encoded and held in memory alongside the multipart body.
@@ -170,7 +170,7 @@ const (
 )
 
 // Variants mirrored from the verified browser / Python probe.
-const variants = "EnableMcpServerWidgets,feature.EnableMcpServerWidgets,feature.EnableLuForChatCIQ,feature.enableChatCIQPlugin,EnableRequestPlugins,feature.EnableSensitivityLabels,EnableUnsupportedUrlDetector,feature.IsCustomEngineCopilotEnabled,feature.bizchatfluxv3,feature.enablechatpages,feature.enableCodeCanvas,feature.turnOnWorkTabRecommendation,turnOffWorkTabUpsellFromClient,feature.turnOnDARecommendation,feature.IsStreamingModeInChatRequestEnabled,IncludeSourceAttributionsConcise,SkipPublishEmptyMessage,feature.EnableDeduplicatingSourceAttributions,Enable3PActionProgressMessages,feature.enableClientWebRtc,feature.EnableMeetingRecapOfSeriesMeetingWithCiq,feature.EnableReferencesListCompleteSignal,feature.StorageMessageSplitDisabled,feature.EnableCuaTakeControlApi,feature.cwcallowedos,feature.disabledisallowedmsgs,feature.enableCitationsForSynthesisData,feature.enableGenerateGraphicArtOptionsSet,cdximagen,feature.EnableUpdatedUXForConfirmationDialog,feature.EnableClientFileURLSupportForOfficeWebPaidCopilot,feature.EnableDesignEditorImageGrounding,feature.EnableDesignerEditor,feature.OfficeWebToHelix,feature.OfficeDesktopToHelix,feature.M365TeamsHubToHelix,feature.OwaHubToHelix,feature.MonarchHubToHelix,feature.Win32OutlookHubToHelix,feature.MacOutlookHubToHelix,Agt_bizchat_enableGpt5ForHelix,feature.EnableImageGenInsufficientTokensThrottled,feature.EnableImageGenSystemCapacityThrottled,feature.EnableConversationShareApis,feature.EnableConversationShareApisForMsa,feature.IsCitationsReferencesOutputEnabled,feature.enableDeltaStreamingForReferences,feature.enableIncludeReferencesInDeltaResponse,feature.enablereferencesforagents,feature.EnableMergingPureDeltas,feature.EnableRemoveStreamingMode"
+const variants = "EnableMcpServerWidgets,feature.EnableMcpServerWidgets,feature.EnableLuForChatCIQ,feature.enableChatCIQPlugin,EnableRequestPlugins,feature.EnableSensitivityLabels,EnableUnsupportedUrlDetector,feature.IsCustomEngineCopilotEnabled,feature.bizchatfluxv3,feature.enablechatpages,feature.enableCodeCanvas,feature.turnOnDARecommendation,feature.IsStreamingModeInChatRequestEnabled,IncludeSourceAttributionsConcise,SkipPublishEmptyMessage,feature.EnableDeduplicatingSourceAttributions,Enable3PActionProgressMessages,feature.enableClientWebRtc,feature.EnableMeetingRecapOfSeriesMeetingWithCiq,feature.EnableReferencesListCompleteSignal,feature.StorageMessageSplitDisabled,feature.cwcallowedos,feature.disabledisallowedmsgs,feature.enableCitationsForSynthesisData,feature.enableGenerateGraphicArtOptionsSet,cdximagen,feature.EnableUpdatedUXForConfirmationDialog,feature.EnableClientFileURLSupportForOfficeWebPaidCopilot,feature.EnableDesignEditorImageGrounding,feature.EnableDesignerEditor,feature.OfficeWebToHelix,feature.OfficeDesktopToHelix,feature.M365TeamsHubToHelix,feature.OwaHubToHelix,feature.MonarchHubToHelix,feature.Win32OutlookHubToHelix,feature.MacOutlookHubToHelix,Agt_bizchat_enableGpt5ForHelix,feature.EnableImageGenInsufficientTokensThrottled,feature.EnableImageGenSystemCapacityThrottled,feature.EnableConversationShareApis,feature.IsCitationsReferencesOutputEnabled,feature.enableDeltaStreamingForReferences,feature.enableIncludeReferencesInDeltaResponse,feature.enablereferencesforagents,feature.EnableMergingPureDeltas,feature.EnableRemoveStreamingMode,feature.EnableCodeInterpreterConversion,agt_module_attr_enableReferencesForCodeInterpreter,agt_module_enableCodeInterpreterHallucinatedUrlFilter,SingletonEnvOn,cdxenablefccinmainline,EnableComposeWidget,feature.EnableContentApiandDocTypeHtmlInRichAnswers,cdxgrounding_api_v2_rich_web_answers_reference_bottom_force,cdxenablerenderforisocomp,feature.EnableSkipRehydrationForSpeCIdImages,feature.EnablePersonalization,feature.EnableBase64DataInMessageAnnotations,feature.EnableSkipEmittingMessageOnFlush,feature.EnableRemoveEmptySourceAttributions,agt_researcheragent_enableMemoryRead"
 
 type Account struct {
 	AccessToken string
@@ -301,7 +301,7 @@ type Client struct {
 func NewClient() *Client {
 	h := make(http.Header)
 	h.Set("Origin", "https://m365.cloud.microsoft")
-	h.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0")
+	h.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 	d := outbound.WebSocketDialer()
 	return &Client{
 		HTTPHeader: h,
@@ -493,6 +493,8 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			return Result{}, &DialError{Status: 0, Kind: kind, cause: fmt.Errorf("handshake recv: %w", err)}
 		}
 	}
+
+	_ = wsWrite(websocket.TextMessage, []byte(`{"type":6}`+rs))
 
 	payload := chatPayload(req, requestID, firstTurn)
 	log.Printf("chathub prompt-trace text=%d tools=%d payload=%d", len(req.Text), len(req.Tools), len(payload))
@@ -862,6 +864,33 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 							if st, ok := m["spokenText"].(string); ok {
 								spokenText = st
 							}
+							if srs, ok := m["suggestedResponses"].([]any); ok && len(srs) > 0 {
+								for _, srRaw := range srs {
+									sr, ok := srRaw.(map[string]any)
+									if !ok {
+										continue
+									}
+									suggestions = append(suggestions, parseSuggestedResponse(sr))
+								}
+							}
+							if mrefs, ok := m["references"].(map[string]any); ok && len(mrefs) > 0 {
+								for k, v := range mrefs {
+									rm, ok := v.(map[string]any)
+									if !ok {
+										continue
+									}
+									ref := Reference{}
+									if tl, ok := rm["targetLink"].(string); ok {
+										ref.TargetLink = tl
+									}
+									if t, ok := rm["title"].(string); ok {
+										ref.Title = t
+									}
+									if ref.TargetLink != "" || ref.Title != "" {
+										references[k] = ref
+									}
+								}
+							}
 							if author == "bot" && mt == "" && text != "" {
 								// ChatHub often sends the first visible text as a full snapshot,
 								// followed by cursor deltas. Emit only the unseen suffix.
@@ -885,6 +914,9 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					if thr, ok := item["throttling"]; ok {
 						throttling = thr
 					}
+					if ctt, ok := item["conversationTransferToken"].(string); ok && ctt != "" {
+						conversationTransferToken = ctt
+					}
 					if sugg, ok := item["suggestedResponses"].([]any); ok && len(sugg) > 0 && len(suggestions) == 0 {
 						for _, s := range sugg {
 							if sm, ok := s.(map[string]any); ok {
@@ -896,8 +928,11 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 						}
 					}
 					if res, ok := item["result"].(map[string]any); ok {
-						rawResult, _ = res["value"].(string)
-				if msg, ok := res["message"].(string); ok {
+					rawResult, _ = res["value"].(string)
+					if mi, ok := res["meteringInformation"]; ok && mi != nil {
+						meteringInformation = mi
+					}
+					if msg, ok := res["message"].(string); ok {
 						final = msg
 						if imageLimitDetected(final) {
 							returnConn = false
@@ -1234,13 +1269,10 @@ func (c *Client) uploadAttachments(ctx context.Context, acc Account, conversatio
 }
 
 func chatPayload(req Request, requestID string, firstTurn bool) string {
+	_ = firstTurn
 	locale := req.Locale
 	if locale == "" {
 		locale = "en-us"
-	}
-	market := req.Market
-	if market == "" {
-		market = "en-us"
 	}
 	tz := req.TimeZone
 	if tz == "" {
@@ -1260,6 +1292,18 @@ func chatPayload(req Request, requestID string, firstTurn bool) string {
 	for i, id := range federatedConns {
 		fcAny[i] = id
 	}
+	clientInfo := map[string]any{
+		"clientPlatform":        "mcmcopilot-web",
+		"clientAppName":         "Office",
+		"clientEntrypoint":      "mcmcopilot-officeweb",
+		"clientSessionId":       req.SessionID,
+		"ProductCategory":       "Chat",
+		"clientAppType":         "Web",
+		"productEntryPoint":     "ChatPanel",
+		"deviceOS":              deviceOS,
+		"deviceType":            "Desktop",
+		"clientPlatformVersion": "10",
+	}
 	message := map[string]any{
 		"author":                "user",
 		"attachments":           req.Attachments,
@@ -1271,13 +1315,13 @@ func chatPayload(req Request, requestID string, firstTurn bool) string {
 			"timeZoneOffset": tzOffset,
 			"timeZone":       tz,
 		},
-		"locale":            locale,
-		"market":            market,
-		"messageType":       "Chat",
-		"experienceType":    "Default",
-		"adaptiveCards":     []any{},
+		"locale":         locale,
+		"messageType":    "Chat",
+		"experienceType": "Default",
+		"adaptiveCards":  []any{},
 		"clientPreferences": map[string]any{},
 		"connectedFederatedConnections": fcAny,
+		"clientInfo": clientInfo,
 	}
 	// The browser does not send an OpenAI attachments array to ChatHub. It
 	// sends a file annotation after the file has been uploaded by Office.
@@ -1340,6 +1384,11 @@ func chatPayload(req Request, requestID string, firstTurn bool) string {
 		"cwc_code_interpreter_interactive_charts_inline_image",
 		"code_interpreter_matplotlib_patching",
 		"cwc_fileupload_odb",
+	}
+	if req.FeatureFlags.MemoryV2 {
+		optionsSets = append(optionsSets, "update_memory_plugin", "add_custom_instructions")
+	}
+	optionsSets = append(optionsSets,
 		"cwc_flux_v3",
 		"flux_v3_progress_messages",
 		"enable_batch_token_processing",
@@ -1356,11 +1405,7 @@ func chatPayload(req Request, requestID string, firstTurn bool) string {
 		"flux_v3_image_gen_enable_system_text_with_params",
 		"flux_v3_image_gen_enable_designer_dimensions_meta_prompting_in_system_prompts",
 		"flux_v3_image_gen_enable_story",
-		"rich_responses",
-	}
-	if req.FeatureFlags.MemoryV2 {
-		optionsSets = append(optionsSets, "update_memory_plugin", "add_custom_instructions")
-	}
+		"rich_responses")
 	if req.FeatureFlags.DeepWork {
 		optionsSets = append(optionsSets, "enable_deep_work")
 	}
@@ -1386,7 +1431,7 @@ func chatPayload(req Request, requestID string, firstTurn bool) string {
 		"arguments": []any{
 			map[string]any{
 				"source":              "officeweb",
-				"clientCorrelationId": uuid.NewString(),
+				"clientCorrelationId": requestID,
 				"sessionId":           req.SessionID,
 				"optionsSets":         optionsSets,
 				"options":             map[string]any{},
@@ -1402,30 +1447,23 @@ func chatPayload(req Request, requestID string, firstTurn bool) string {
 					"EscapeHatch", "TriggerPluginAuth", "ResumePluginAuth",
 					"SideBySide", "ReferencesListComplete", "SwitchRespondingEndpoint",
 				},
-				"sliceIds":          []any{},
-				"threadLevelGptId":  map[string]any{},
-				"conversationId":    req.ConversationID,
-				"traceId":           uuid.NewString(),
-				"isStartOfSession":  firstTurn,
-				"productThreadType": "Office",
-				"clientInfo": map[string]any{
-					"clientPlatform":        "mcmcopilot-web",
-					"clientAppName":         "Office",
-					"clientEntrypoint":      "mcmcopilot-officeweb",
-					"clientSessionId":       req.SessionID,
-					"ProductCategory":       "Chat",
-					"clientAppType":         "Web",
-					"productEntryPoint":     "ChatPanel",
-					"deviceOS":              deviceOS,
-					"deviceType":            "Desktop",
-					"clientPlatformVersion": "10",
-				},
-				"tone":          req.Tone,
-				"streamingMode": "ConciseWithPadding",
-				"message":       message,
+				"sliceIds":         []any{},
+				"threadLevelGptId": map[string]any{},
+				// HAR evidence (report 01 F12): all 12 captured sessions send
+				// isStartOfSession=false even on the first turn; the WS URL
+				// already binds session/conversation identity.
+				"isStartOfSession": false,
+				"traceId":          requestID,
+				"clientInfo":       clientInfo,
+				"tone":             req.Tone,
+				"streamingMode":    "ConciseWithPadding",
+				"message":          message,
 
-				"plugins":    clientPlugins(req.Tools, req.MCPServerURL),
-				"toolChoice": req.ToolChoice,
+				"plugins":                    clientPlugins(req.Tools, req.MCPServerURL),
+				"extraExtensionParameters":   map[string]any{},
+				"isSbsSupported":             true,
+				"renderReferencesBehindEOS":  true,
+				"disconnectBehavior":         "continue",
 			},
 		},
 		"invocationId": "0",
@@ -1438,14 +1476,21 @@ func chatPayload(req Request, requestID string, firstTurn bool) string {
 	if len(req.PreviousMessages) > 0 {
 		chat["arguments"].([]any)[0].(map[string]any)["previousMessages"] = req.PreviousMessages
 	}
+	now := time.Now().UTC()
+	rfc3339 := func(d time.Duration) string { return now.Add(d).Format(time.RFC3339Nano) }
+	connStart := rfc3339(-2 * time.Second)
+	userInputStart := rfc3339(-2 * time.Second)
+	connEstab := rfc3339(-500 * time.Millisecond)
+	userInputSubmit := rfc3339(0)
 	metrics := map[string]any{
 		"arguments": []any{
 			map[string]any{
 				"Timestamps": map[string]string{
-					"ConnectionStart":       "",
-					"UserInputStart":        "",
-					"ConnectionEstablished": "",
-					"UserInputSubmit":       "",
+					"ConnectionStart":       connStart,
+					"UserInputStart":        userInputStart,
+					"ConnectionEstablished": connEstab,
+					"UserInputSubmit":       userInputSubmit,
+					"RequestSent":           rfc3339(time.Millisecond),
 				},
 			},
 		},

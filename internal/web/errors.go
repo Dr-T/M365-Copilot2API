@@ -48,6 +48,17 @@ func upstreamStatus(err error) int {
 	if IsAuthFailure(err) {
 		return http.StatusUnauthorized
 	}
+	cat := ClassifyError(err)
+	switch cat {
+	case CategoryUserBanned:
+		return http.StatusForbidden
+	case CategoryUserThrottled:
+		return http.StatusTooManyRequests
+	case CategoryInsufficientTokens:
+		return http.StatusTooManyRequests
+	case CategoryRetryable422:
+		return http.StatusUnprocessableEntity
+	}
 	return http.StatusBadGateway
 }
 
@@ -126,6 +137,39 @@ func writeUpstreamErrorWithAccount(w http.ResponseWriter, err error, accountID s
 	writeOpenAIError(w, status, "upstream_error", upstreamError(err))
 }
 
+func IsRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	cat := ClassifyError(err)
+	switch cat {
+	case CategoryQuota429, CategoryOverload503, CategoryRetryable422,
+		CategorySOCKS5, CategoryDNS, CategoryTCP, CategoryTLS,
+		CategoryWSHandshake, CategoryWSReadTimeout, CategoryUpstreamStructured,
+		CategoryGlobalUnavailable:
+		return true
+	case CategoryForbidden403, CategoryAuthExpired401,
+		CategoryUserBanned, CategoryClientCanceled:
+		return false
+	default:
+		return false
+	}
+}
+
+func ClassifyErrorCode(code string) ErrorCategory {
+	switch code {
+	case "ErrorUserBanned":
+		return CategoryUserBanned
+	case "ErrorUserThrottled":
+		return CategoryUserThrottled
+	case "InsufficientTokens":
+		return CategoryInsufficientTokens
+	case "ErrorDisallowedAADUser":
+		return CategoryDesignerDisabled
+	default:
+		return CategoryUnknown
+	}
+}
 // writeUpstreamError renders a failed upstream call as an HTTP response,
 // surfacing the Retry-After hint for rate limits so clients can back off.
 func writeUpstreamError(w http.ResponseWriter, err error) {

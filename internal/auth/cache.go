@@ -457,7 +457,14 @@ func (s *Store) EnsureValid(id string) (AccountToken, error) {
 		s.mu.Unlock()
 		return AccountToken{}, os.ErrNotExist
 	}
-	if time.Now().Before(acc.ExpiresAt.Add(-30 * time.Second)) {
+	remaining := acc.ExpiresAt.Sub(time.Now())
+	threshold := 120 * time.Second
+	if total := acc.ExpiresAt.Sub(acc.UpdatedAt); total > 0 {
+		if t := total / 10; t < threshold {
+			threshold = t
+		}
+	}
+	if remaining > threshold {
 		s.mu.Unlock()
 		return acc, nil
 	}
@@ -494,7 +501,10 @@ func (s *Store) refreshInflight(acc AccountToken) (AccountToken, error) {
 	if acc.ClientID == DeviceClientID() {
 		endpoint = DeviceTokenEndpoint()
 	}
-	tok, err := Refresh(acc.RefreshToken, acc.ClientID, endpoint)
+	if acc.TID != "" && acc.ClientID != DeviceClientID() && strings.Contains(endpoint, "/common/") {
+		endpoint = strings.Replace(endpoint, "/common/", "/"+acc.TID+"/", 1)
+	}
+	tok, err := Refresh(acc.RefreshToken, acc.ClientID, endpoint, acc.OID, acc.TID)
 	if err != nil {
 		s.mu.Lock()
 		for i, a := range s.data.Accounts {
@@ -534,7 +544,14 @@ func (s *Store) RefreshAllExpired() []TokenRefreshResult {
 	s.mu.Lock()
 	candidates := make([]AccountToken, 0, len(s.data.Accounts))
 	for _, a := range s.data.Accounts {
-		if time.Now().After(a.ExpiresAt.Add(-30*time.Second)) && a.RefreshToken != "" {
+		remaining := a.ExpiresAt.Sub(time.Now())
+		threshold := 120 * time.Second
+		if total := a.ExpiresAt.Sub(a.UpdatedAt); total > 0 {
+			if t := total / 10; t < threshold {
+				threshold = t
+			}
+		}
+		if remaining < threshold && a.RefreshToken != "" {
 			candidates = append(candidates, a)
 		}
 	}

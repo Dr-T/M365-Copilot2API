@@ -89,11 +89,15 @@ print(f"  Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
 # ── 0. Admin Login ──
 section("0. Admin Login")
 try:
-    r = requests.post(f"{BASE}/api/admin/login", json={"password": ADMIN_PW}, timeout=15)
+    sess = requests.Session()
+    r = sess.post(f"{BASE}/api/admin/login", json={"password": ADMIN_PW}, timeout=15)
     sc = r.headers.get("Set-Cookie", "")
     if sc:
         session_cookie = sc.split(";")[0]
         ok("Admin login", True)
+    elif sess.cookies.get("m365_admin_session"):
+        session_cookie = f"m365_admin_session={sess.cookies.get('m365_admin_session')}"
+        ok("Admin login (cookie jar)", True)
     else:
         try:
             d = r.json()

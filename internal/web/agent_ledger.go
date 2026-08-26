@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -19,14 +20,23 @@ type toolEvidence struct {
 	Result    string `json:"result"`
 	Failed    bool   `json:"failed"`
 }
+
+type meteringSnapshot struct {
+	MeterError         string         `json:"meterError,omitempty"`
+	HasAccess          bool           `json:"hasAccess"`
+	RemainingAllowance map[string]int `json:"remainingAllowance,omitempty"`
+	Timestamp          time.Time      `json:"timestamp"`
+}
+
 type agentLedger struct {
-	Completed           []toolEvidence `json:"completed"`
-	Pending             []toolEvidence `json:"pending"`
-	ToolRounds          int            `json:"tool_rounds"`
-	RepeatedCall        bool           `json:"repeated_call"`
-	RepeatedFailure     bool           `json:"repeated_failure"`
-	RepetitionSignature string         `json:"repetition_signature,omitempty"`
-	StuckLoop           bool           `json:"stuck_loop"`
+	Completed           []toolEvidence     `json:"completed"`
+	Pending             []toolEvidence     `json:"pending"`
+	ToolRounds          int                `json:"tool_rounds"`
+	RepeatedCall        bool               `json:"repeated_call"`
+	RepeatedFailure     bool               `json:"repeated_failure"`
+	RepetitionSignature string             `json:"repetition_signature,omitempty"`
+	StuckLoop           bool               `json:"stuck_loop"`
+	Metering            []meteringSnapshot `json:"metering,omitempty"`
 }
 
 var failureSignal = regexp.MustCompile(`(?i)(exit\s*(code|status)?\s*[:=]?\s*[1-9]\d*|\berror\b|\bfailed\b|\bfailure\b|exception|traceback|timed?\s*out|permission denied|not found|refused)`)
@@ -163,6 +173,19 @@ func filterCompletedCalls(calls []detectedToolCall, l agentLedger) []detectedToo
 	}
 	return out
 }
+func recordMetering(l *agentLedger, meterError string, hasAccess bool, remaining map[string]int) {
+	if l == nil {
+		return
+	}
+	snap := meteringSnapshot{
+		MeterError:         meterError,
+		HasAccess:          hasAccess,
+		RemainingAllowance: remaining,
+		Timestamp:          time.Now(),
+	}
+	l.Metering = append(l.Metering, snap)
+}
+
 func (l agentLedger) CanContinue(maxRounds int) error {
 	if maxRounds <= 0 {
 		maxRounds = 32

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -71,6 +72,15 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 	if res.Throttling != nil && s.accountPool != nil {
 		s.accountPool.UpdateThrottling(acc.ID, res.Throttling)
 		s.logThrottlingWarning(acc.ID, res.Throttling)
+	}
+	if res.MeteringInformation != nil && s.accountPool != nil {
+		if miRaw, err := json.Marshal(res.MeteringInformation); err == nil {
+			mErr, _ := ParseMetering(acc.ID, json.RawMessage(miRaw))
+			applyMeteringCooldown(s.accountPool, acc.ID, mErr)
+		}
+		if remaining := remainingAllowances(res.Throttling); len(remaining) > 0 {
+			log.Printf("[metering] account=%s remainingAllowance=%v", acc.ID, remaining)
+		}
 	}
 	if body.SessionKey != "" {
 		s.sessions.upsert(conversation{ID: body.SessionKey, AccountID: acc.ID, ConversationID: res.ConversationID, SessionID: res.SessionID, Title: text})
@@ -148,9 +158,6 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// writeSSE emits one SSE frame, returning when the client has disconnected
-// (request context canceled) or the write fails so the handler can abort
-// instead of blocking a goroutine against a dead socket.
 func writeSSE(r *http.Request, w http.ResponseWriter, f http.Flusher, name string, value any) error {
 	if err := r.Context().Err(); err != nil {
 		return err
@@ -165,4 +172,69 @@ func writeSSE(r *http.Request, w http.ResponseWriter, f http.Flusher, name strin
 		f.Flush()
 	}
 	return nil
+}
+
+type meteringInfoItem struct {
+	MeterError string `json:"meterError"`
+	HasAccess  bool   `json:"hasAccess"`
+}
+
+type throttlingMeteringEntry struct {
+	RemainingAllowance int `json:"remainingAllowance"`
+}
+
+func ParseMetering(accountID string, items json.RawMessage) (meterError string, hasAccess bool) {
+	hasAccess = true
+	if len(items) == 0 {
+		return "", hasAccess
+	}
+	var parsed []meteringInfoItem
+	if json.Unmarshal(items, &parsed) != nil {
+		return "", hasAccess
+	}
+	for _, mi := range parsed {
+		if mi.MeterError != "" {
+			meterError = mi.MeterError
+		}
+		hasAccess = mi.HasAccess
+	}
+	if meterError != "" {
+		log.Printf("[metering] account=%s meterError=%q hasAccess=%v", accountID, meterError, hasAccess)
+	}
+	return meterError, hasAccess
+}
+
+func remainingAllowances(throttling any) map[string]int {
+	remaining := map[string]int{}
+	if throttling == nil {
+		return remaining
+	}
+	b, err := json.Marshal(throttling)
+	if err != nil {
+		return remaining
+	}
+	var thr struct {
+		Metering map[string]throttlingMeteringEntry `json:"metering"`
+	}
+	if json.Unmarshal(b, &thr) != nil {
+		return remaining
+	}
+	for k, v := range thr.Metering {
+		remaining[k] = v.RemainingAllowance
+	}
+	return remaining
+}
+
+func applyMeteringCooldown(pool *accountHealth, accountID string, meterError string) {
+	if pool == nil || accountID == "" || meterError == "" {
+		return
+	}
+	switch meterError {
+	case "ImageGenInsufficientTokensThrottled":
+		pool.MarkImageGenTokensThrottled(accountID)
+		log.Printf("[metering] account=%s imageGenCooldownUntil=next_midnight_utc", accountID)
+	case "ImageGenSystemCapacityThrottled":
+		pool.MarkImageGenSystemThrottled(accountID)
+		log.Printf("[metering] account=%s imageGenSystemCooldown=30m", accountID)
+	}
 }

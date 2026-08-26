@@ -19,6 +19,11 @@ const (
 	CategoryOverload503       ErrorCategory = "OVERLOAD_503"
 	CategoryAuthExpired401    ErrorCategory = "AUTH_EXPIRED_401"
 	CategoryForbidden403      ErrorCategory = "FORBIDDEN_403"
+	CategoryRetryable422      ErrorCategory = "RETRYABLE_422"
+	CategoryUserBanned        ErrorCategory = "USER_BANNED"
+	CategoryUserThrottled     ErrorCategory = "USER_THROTTLED"
+	CategoryInsufficientTokens ErrorCategory = "INSUFFICIENT_TOKENS"
+	CategoryDesignerDisabled  ErrorCategory = "DESIGNER_DISABLED"
 	CategorySOCKS5            ErrorCategory = "SOCKS5"
 	CategoryDNS               ErrorCategory = "DNS"
 	CategoryTCP               ErrorCategory = "TCP"
@@ -35,6 +40,7 @@ type UpstreamHTTPError struct {
 	Status     int
 	RetryAfter int
 	Body       string
+	ErrorCode  string
 }
 
 func (e *UpstreamHTTPError) Error() string {
@@ -56,6 +62,18 @@ func ClassifyError(err error) ErrorCategory {
 	}
 	var httpErr *UpstreamHTTPError
 	if errors.As(err, &httpErr) {
+		if httpErr.ErrorCode != "" {
+			switch httpErr.ErrorCode {
+			case "ErrorUserBanned":
+				return CategoryUserBanned
+			case "ErrorUserThrottled":
+				return CategoryUserThrottled
+			case "InsufficientTokens":
+				return CategoryInsufficientTokens
+			case "ErrorDisallowedAADUser":
+				return CategoryDesignerDisabled
+			}
+		}
 		switch httpErr.Status {
 		case 429:
 			return CategoryQuota429
@@ -65,6 +83,8 @@ func ClassifyError(err error) ErrorCategory {
 			return CategoryAuthExpired401
 		case 403:
 			return CategoryForbidden403
+		case 422:
+			return CategoryRetryable422
 		}
 		if strings.Contains(strings.ToLower(httpErr.Body), "limited") {
 			return CategoryQuota429
@@ -107,6 +127,8 @@ func ClassifyError(err error) ErrorCategory {
 			return CategoryAuthExpired401
 		case 403:
 			return CategoryForbidden403
+		case 422:
+			return CategoryRetryable422
 		}
 		if dialErr.Kind != "" {
 			return ErrorCategory(dialErr.Kind)
@@ -168,7 +190,8 @@ func IsRateLimited(err error) bool {
 		if httpErr.Status == 429 || httpErr.Status == 503 {
 			return true
 		}
-		if strings.Contains(strings.ToLower(httpErr.Body), "limited") {
+		low := strings.ToLower(httpErr.Body)
+		if strings.Contains(low, "limited") || strings.Contains(low, "图像生成功能没有成功") || strings.Contains(low, "metererror") {
 			return true
 		}
 	}
@@ -242,6 +265,16 @@ func CooldownForCategory(cat ErrorCategory, retryAfter int, attempt int) time.Du
 		return 2 * time.Minute
 	case CategoryForbidden403:
 		return 24 * time.Hour
+	case CategoryUserBanned:
+		return 365 * 24 * time.Hour
+	case CategoryUserThrottled:
+		return 1 * time.Hour
+	case CategoryInsufficientTokens:
+		return 24 * time.Hour
+	case CategoryDesignerDisabled:
+		return 0
+	case CategoryRetryable422:
+		return 5 * time.Second
 	case CategorySOCKS5:
 		return 30 * time.Second
 	case CategoryDNS:
@@ -364,30 +397,34 @@ func ResetGlobalCircuit() {
 }
 
 type accountHealth struct {
-	mu              sync.Mutex
-	cooldown        map[string]time.Time
-	authFail        map[string]bool
-	limited         map[string]bool
-	calls           map[string]uint64
-	imageLimited    map[string]bool
-	imageLimitUntil map[string]time.Time
-	lastThrottling  map[string]any
-	authFailReason  map[string]string
-	quotaAttempts   map[string]int
+	mu                       sync.Mutex
+	cooldown                 map[string]time.Time
+	authFail                 map[string]bool
+	limited                  map[string]bool
+	calls                    map[string]uint64
+	imageLimited             map[string]bool
+	imageLimitUntil          map[string]time.Time
+	imageGenCooldownUntil    map[string]time.Time
+	imageGenSystemCooldown   map[string]time.Time
+	lastThrottling           map[string]any
+	authFailReason           map[string]string
+	quotaAttempts            map[string]int
 }
 
 func newAccountHealth() *accountHealth {
 	ResetGlobalCircuit()
 	return &accountHealth{
-		cooldown:        map[string]time.Time{},
-		authFail:        map[string]bool{},
-		limited:         map[string]bool{},
-		calls:           map[string]uint64{},
-		imageLimited:    map[string]bool{},
-		imageLimitUntil: map[string]time.Time{},
-		lastThrottling:  map[string]any{},
-		authFailReason:  map[string]string{},
-		quotaAttempts:   map[string]int{},
+		cooldown:               map[string]time.Time{},
+		authFail:               map[string]bool{},
+		limited:                map[string]bool{},
+		calls:                  map[string]uint64{},
+		imageLimited:           map[string]bool{},
+		imageLimitUntil:        map[string]time.Time{},
+		imageGenCooldownUntil:  map[string]time.Time{},
+		imageGenSystemCooldown: map[string]time.Time{},
+		lastThrottling:         map[string]any{},
+		authFailReason:         map[string]string{},
+		quotaAttempts:          map[string]int{},
 	}
 }
 
@@ -406,6 +443,12 @@ func (h *accountHealth) cleanupExpiredCooldownLocked(accountID string) {
 		delete(h.calls, accountID)
 	}
 	delete(h.quotaAttempts, accountID)
+	if t, ok := h.imageGenCooldownUntil[accountID]; ok && time.Now().After(t) {
+		delete(h.imageGenCooldownUntil, accountID)
+	}
+	if t, ok := h.imageGenSystemCooldown[accountID]; ok && time.Now().After(t) {
+		delete(h.imageGenSystemCooldown, accountID)
+	}
 }
 
 func (h *accountHealth) MarkCall(accountID string) {
@@ -464,6 +507,41 @@ func (h *accountHealth) ImageLimited(accountID string) bool {
 	}
 	h.cleanupExpiredCooldownLocked(accountID)
 	return h.imageLimited[accountID]
+}
+
+func (h *accountHealth) MarkImageGenTokensThrottled(accountID string) {
+	if h == nil || accountID == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	now := time.Now().UTC()
+	tomorrow := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
+	h.imageGenCooldownUntil[accountID] = tomorrow
+}
+
+func (h *accountHealth) MarkImageGenSystemThrottled(accountID string) {
+	if h == nil || accountID == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.imageGenSystemCooldown[accountID] = time.Now().Add(30 * time.Minute)
+}
+
+func (h *accountHealth) ImageGenAvailable(accountID string) bool {
+	if h == nil {
+		return true
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if t, ok := h.imageGenCooldownUntil[accountID]; ok && time.Now().Before(t) {
+		return false
+	}
+	if t, ok := h.imageGenSystemCooldown[accountID]; ok && time.Now().Before(t) {
+		return false
+	}
+	return true
 }
 
 func (h *accountHealth) UpdateThrottling(accountID string, data any) {
@@ -545,17 +623,23 @@ func (h *accountHealth) MarkFailure(accountID string, err error, window time.Dur
 		}
 		return
 	case CategoryForbidden403:
+		var httpErr403 *UpstreamHTTPError
+		if errors.As(err, &httpErr403) && httpErr403.ErrorCode == "ErrorDisallowedAADUser" {
+			return
+		}
+		var dialErr403 *chathub.DialError
+		if errors.As(err, &dialErr403) && dialErr403.Kind == "DESIGNER_DISABLED" {
+			return
+		}
 		h.cooldown[accountID] = time.Now().Add(CooldownForCategory(cat, 0, 1))
 		h.authFail[accountID] = true
 		delete(h.limited, accountID)
 		h.authFailReason[accountID] = "403"
-		var httpErr *UpstreamHTTPError
-		if errors.As(err, &httpErr) {
-			h.authFailReason[accountID] = fmt.Sprintf("%d", httpErr.Status)
+		if httpErr403 != nil {
+			h.authFailReason[accountID] = fmt.Sprintf("%d", httpErr403.Status)
 		} else {
-			var dialErr *chathub.DialError
-			if errors.As(err, &dialErr) && dialErr.Status != 0 {
-				h.authFailReason[accountID] = fmt.Sprintf("%d", dialErr.Status)
+			if dialErr403 != nil && dialErr403.Status != 0 {
+				h.authFailReason[accountID] = fmt.Sprintf("%d", dialErr403.Status)
 			}
 		}
 		return
@@ -583,6 +667,27 @@ func (h *accountHealth) MarkFailure(accountID string, err error, window time.Dur
 		cd := CooldownForCategory(cat, 0, 1)
 		h.cooldown[accountID] = time.Now().Add(cd)
 		return
+	case CategoryUserBanned:
+		h.authFail[accountID] = true
+		h.authFailReason[accountID] = "banned"
+		h.cooldown[accountID] = time.Now().Add(CooldownForCategory(cat, 0, 1))
+		return
+	case CategoryUserThrottled:
+		h.authFail[accountID] = true
+		h.authFailReason[accountID] = "throttled"
+		h.cooldown[accountID] = time.Now().Add(CooldownForCategory(cat, 0, 1))
+		return
+	case CategoryInsufficientTokens:
+		delete(h.authFail, accountID)
+		delete(h.authFailReason, accountID)
+		h.limited[accountID] = true
+		h.cooldown[accountID] = time.Now().Add(CooldownForCategory(cat, 0, 1))
+		return
+	case CategoryRetryable422:
+		delete(h.authFail, accountID)
+		delete(h.authFailReason, accountID)
+		h.cooldown[accountID] = time.Now().Add(CooldownForCategory(cat, 0, 1))
+		return
 	default:
 		delete(h.authFail, accountID)
 		delete(h.authFailReason, accountID)
@@ -599,6 +704,8 @@ func (h *accountHealth) MarkSuccess(accountID string) {
 	defer h.mu.Unlock()
 	imageLimited := h.imageLimited[accountID]
 	imageLimitUntil := h.imageLimitUntil[accountID]
+	imageGenCooldown := h.imageGenCooldownUntil[accountID]
+	imageGenSysCooldown := h.imageGenSystemCooldown[accountID]
 	delete(h.cooldown, accountID)
 	delete(h.authFail, accountID)
 	delete(h.limited, accountID)
@@ -612,6 +719,16 @@ func (h *accountHealth) MarkSuccess(accountID string) {
 	} else {
 		delete(h.imageLimited, accountID)
 		delete(h.imageLimitUntil, accountID)
+	}
+	if !imageGenCooldown.IsZero() && time.Now().Before(imageGenCooldown) {
+		h.imageGenCooldownUntil[accountID] = imageGenCooldown
+	} else {
+		delete(h.imageGenCooldownUntil, accountID)
+	}
+	if !imageGenSysCooldown.IsZero() && time.Now().Before(imageGenSysCooldown) {
+		h.imageGenSystemCooldown[accountID] = imageGenSysCooldown
+	} else {
+		delete(h.imageGenSystemCooldown, accountID)
 	}
 }
 
@@ -671,6 +788,12 @@ func (h *accountHealth) Snapshot() map[string]map[string]any {
 	for id := range h.quotaAttempts {
 		ids[id] = true
 	}
+	for id := range h.imageGenCooldownUntil {
+		ids[id] = true
+	}
+	for id := range h.imageGenSystemCooldown {
+		ids[id] = true
+	}
 	for id := range ids {
 		h.cleanupExpiredCooldownLocked(id)
 		m := map[string]any{}
@@ -691,6 +814,16 @@ func (h *accountHealth) Snapshot() map[string]map[string]any {
 		}
 		if h.imageLimited[id] {
 			m["imageLimited"] = true
+		}
+		if t, ok := h.imageGenCooldownUntil[id]; ok && !t.IsZero() {
+			if time.Now().Before(t) {
+				m["imageGenCooldownUntil"] = t
+			}
+		}
+		if t, ok := h.imageGenSystemCooldown[id]; ok && !t.IsZero() {
+			if time.Now().Before(t) {
+				m["imageGenSystemCooldown"] = t
+			}
 		}
 		if t := h.lastThrottling[id]; t != nil {
 			m["throttling"] = t
@@ -721,6 +854,8 @@ func (h *accountHealth) ClearAllCooldowns() {
 	h.calls = map[string]uint64{}
 	h.imageLimited = map[string]bool{}
 	h.imageLimitUntil = map[string]time.Time{}
+	h.imageGenCooldownUntil = map[string]time.Time{}
+	h.imageGenSystemCooldown = map[string]time.Time{}
 	h.lastThrottling = map[string]any{}
 	h.authFailReason = map[string]string{}
 	h.quotaAttempts = map[string]int{}
