@@ -387,9 +387,12 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	var reused bool
 	phase = PhaseDial
 
+	var connWriteMu *sync.Mutex
+	var poolFrames <-chan []byte
+	var poolErrs <-chan error
 	if c.Pool != nil {
 		var poolErr error
-		conn, reused, poolErr = c.Pool.Take(ctx, acc.OID, acc.TID, wsURL)
+		conn, connWriteMu, poolFrames, poolErrs, reused, poolErr = c.Pool.Take(ctx, acc.OID, acc.TID, wsURL)
 		if poolErr != nil {
 			if errors.Is(poolErr, context.Canceled) {
 				return Result{}, &DialError{Status: 0, Kind: "CLIENT_CANCELED", cause: poolErr}
@@ -444,10 +447,11 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	}
 	phase = PhaseHandshake
 
-	var writeMu sync.Mutex
 	wsWrite := func(msgType int, data []byte) error {
-		writeMu.Lock()
-		defer writeMu.Unlock()
+		if connWriteMu != nil {
+			connWriteMu.Lock()
+			defer connWriteMu.Unlock()
+		}
 		return conn.WriteMessage(msgType, data)
 	}
 
@@ -639,6 +643,39 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	go func() {
 		defer close(readCh)
 		for {
+			if reused {
+				var msg []byte
+				var err error
+				select {
+				case m, ok := <-poolFrames:
+					if !ok {
+						select {
+						case err = <-poolErrs:
+						default:
+							err = io.ErrUnexpectedEOF
+						}
+					} else {
+						msg = m
+					}
+				case e := <-poolErrs:
+					err = e
+				case <-done:
+					return
+				case <-ctx.Done():
+					return
+				}
+				select {
+				case readCh <- wsRead{msg: msg, err: err}:
+				case <-done:
+					return
+				case <-ctx.Done():
+					return
+				}
+				if err != nil {
+					return
+				}
+				continue
+			}
 			_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 			_, msg, err := conn.ReadMessage()
 			select {
@@ -781,7 +818,19 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 						}
 					}
 					if w, ok := arg["writeAtCursor"].(string); ok && w != "" && !toolFrame {
-						if err := emitSnapshot(w); err != nil {
+						// HAR report 05 §3: writeAtCursor is a pure append
+						// fragment (cursor p=-1, 12/12 samples). Once a text
+						// baseline exists, forward it as a delta immediately
+						// for token-level streaming granularity; the next
+						// cumulative snapshot prefix-matches and dedupes.
+						// Treating it as a snapshot (old behavior) collapsed
+						// 33-47 upstream frames into 2-3 giant SSE chunks.
+						if streamed.Len() > 0 {
+							if err := emitDelta(w); err != nil {
+								returnConn = false
+								return Result{}, err
+							}
+						} else if err := emitSnapshot(w); err != nil {
 							returnConn = false
 							return Result{}, err
 						}
@@ -1427,51 +1476,47 @@ func chatPayload(req Request, requestID string, firstTurn bool) string {
 	if req.FeatureFlags.SydneyReconnect {
 		optionsSets = append(optionsSets, "enable_sydney_reconnect")
 	}
-	chat := map[string]any{
-		"arguments": []any{
-			map[string]any{
-				"source":              "officeweb",
-				"clientCorrelationId": requestID,
-				"sessionId":           req.SessionID,
-				"optionsSets":         optionsSets,
-				"options":             map[string]any{},
-				"allowedMessageTypes": []string{
-					"Chat", "Suggestion", "InternalSearchQuery", "Disengaged",
-					"InternalLoaderMessage", "Progress", "GeneratedCode",
-					"RenderCardRequest", "AdsQuery", "SemanticSerp",
-					"GenerateContentQuery", "GenerateGraphicArt", "SearchQuery",
-					"ConfirmationCard", "AuthError", "DeveloperLogs",
-					"TriggerPlugin", "HintInvocation", "MemoryUpdate",
-					"EndOfRequest", "TriggerConfirmation", "ResumeInvokeAction",
-					"ResumeUserInputRequest", "TriggerUserInputRequest",
-					"EscapeHatch", "TriggerPluginAuth", "ResumePluginAuth",
-					"SideBySide", "ReferencesListComplete", "SwitchRespondingEndpoint",
-				},
-				"sliceIds":         []any{},
-				"threadLevelGptId": map[string]any{},
-				// HAR evidence (report 01 F12): all 12 captured sessions send
-				// isStartOfSession=false even on the first turn; the WS URL
-				// already binds session/conversation identity.
-				"isStartOfSession": false,
-				"traceId":          requestID,
-				"clientInfo":       clientInfo,
-				"tone":             req.Tone,
-				"streamingMode":    "ConciseWithPadding",
-				"message":          message,
-
-				"plugins":                    clientPlugins(req.Tools, req.MCPServerURL),
-				"extraExtensionParameters":   map[string]any{},
-				"isSbsSupported":             true,
-				"renderReferencesBehindEOS":  true,
-				"disconnectBehavior":         "continue",
-			},
+	arg0 := map[string]any{
+		"source":              "officeweb",
+		"clientCorrelationId": requestID,
+		"sessionId":           req.SessionID,
+		"optionsSets":         optionsSets,
+		"options":             map[string]any{},
+		"allowedMessageTypes": []string{
+			"Chat", "Suggestion", "InternalSearchQuery", "Disengaged",
+			"InternalLoaderMessage", "Progress", "GeneratedCode",
+			"RenderCardRequest", "AdsQuery", "SemanticSerp",
+			"GenerateContentQuery", "GenerateGraphicArt", "SearchQuery",
+			"ConfirmationCard", "AuthError", "DeveloperLogs",
+			"TriggerPlugin", "HintInvocation", "MemoryUpdate",
+			"EndOfRequest", "TriggerConfirmation", "ResumeInvokeAction",
+			"ResumeUserInputRequest", "TriggerUserInputRequest",
+			"EscapeHatch", "TriggerPluginAuth", "ResumePluginAuth",
+			"SideBySide", "ReferencesListComplete", "SwitchRespondingEndpoint",
 		},
+		"sliceIds":         []any{},
+		"threadLevelGptId": map[string]any{},
+		// HAR evidence (report 01 F12): all 12 captured sessions send
+		// isStartOfSession=false even on the first turn; the WS URL
+		// already binds session/conversation identity.
+		"isStartOfSession": false,
+		"traceId":          requestID,
+		"clientInfo":       clientInfo,
+		"tone":             req.Tone,
+		"streamingMode":    "ConciseWithPadding",
+		"message":          message,
+
+		"plugins":                   clientPlugins(req.Tools, req.MCPServerURL),
+		"extraExtensionParameters":  map[string]any{},
+		"isSbsSupported":            true,
+		"renderReferencesBehindEOS": true,
+		"disconnectBehavior":        "continue",
+	}
+	chat := map[string]any{
+		"arguments":    []any{arg0},
 		"invocationId": "0",
 		"target":       "chat",
 		"type":         4,
-	}
-	if req.ConversationSignature != "" {
-		chat["arguments"].([]any)[0].(map[string]any)["conversationSignature"] = req.ConversationSignature
 	}
 	if len(req.PreviousMessages) > 0 {
 		chat["arguments"].([]any)[0].(map[string]any)["previousMessages"] = req.PreviousMessages
