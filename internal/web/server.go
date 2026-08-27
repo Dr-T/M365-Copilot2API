@@ -502,6 +502,7 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		Password string `json:"password"`
+		Remember bool   `json:"remember"`
 	}
 	decodeErr := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body)
 	s.mu.Lock()
@@ -535,9 +536,15 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		delete(s.adminSessions, oldest)
 	}
-	s.adminSessions[token] = now.Add(24 * time.Hour)
+	ttl := 24 * time.Hour
+	maxAge := 86400
+	if body.Remember {
+		ttl = 30 * 24 * time.Hour
+		maxAge = 30 * 86400
+	}
+	s.adminSessions[token] = now.Add(ttl)
 	s.mu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: "m365_admin_session", Value: token, Path: "/", HttpOnly: true, Secure: secureAdminCookie(r), SameSite: http.SameSiteLaxMode, MaxAge: 86400})
+	http.SetCookie(w, &http.Cookie{Name: "m365_admin_session", Value: token, Path: "/", HttpOnly: true, Secure: secureAdminCookie(r), SameSite: http.SameSiteLaxMode, MaxAge: maxAge})
 	jsonOut(w, map[string]any{"status": "authenticated", "must_change_password": mustChange})
 }
 func (s *Server) adminLogout(w http.ResponseWriter, r *http.Request) {
@@ -1394,13 +1401,14 @@ func (s *Server) adminModelTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var b struct {
-		Model string `json:"model"`
+		Model     string `json:"model"`
+		AccountID string `json:"account_id"`
 	}
 	if json.NewDecoder(r.Body).Decode(&b) != nil || strings.TrimSpace(b.Model) == "" {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "bad json: model required")
 		return
 	}
-	acc, err := s.resolveAccount("")
+	acc, err := s.resolveAccount(b.AccountID)
 	if err != nil {
 		writeUpstreamError(w, err)
 		return
@@ -1872,8 +1880,30 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			s.dropTransientConversation(routeRes.ConversationID)
 		}
 		if routeErr != nil {
-			writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "tool router: "+routeErr.Error())
-			return
+			if IsRateLimited(routeErr) && body.AccountID == "" {
+				if next, nerr := s.nextHealthyAccount(acc.ID); nerr == nil {
+					s.accountPool.MarkFailure(acc.ID, routeErr, s.getRateLimitCooldown())
+					routeRes2, routeErr2 := s.chatWithAccount(ctx, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
+					if routeErr2 == nil {
+						routeRes = routeRes2
+						acc = next
+						account = chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}
+						routeErr = nil
+					} else {
+						s.accountPool.MarkFailure(next.ID, routeErr2, s.getRateLimitCooldown())
+						writeUpstreamErrorWithAccount(w, routeErr2, next.ID)
+						return
+					}
+				}
+			}
+			if routeErr != nil {
+				if IsRateLimited(routeErr) {
+					writeUpstreamErrorWithAccount(w, routeErr, acc.ID)
+				} else {
+					writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "tool router: "+routeErr.Error())
+				}
+				return
+			}
 		}
 		calls, parsed := parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
 		calls = filterCompletedCalls(calls, ledger)
