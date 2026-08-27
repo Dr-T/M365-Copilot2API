@@ -1065,6 +1065,19 @@ async function loadRecentRequests(){
 
 let _accountsCache=[],_accountFilter='all';
 function setAccountFilter(f){_accountFilter=f;document.querySelectorAll('#accountFilter button').forEach(b=>b.classList.toggle('active',b.dataset.f===f));renderAccounts();}
+function accountQuotaDetails(x){
+  const remaining=x.remainingAllowance||{};
+  const preferred=['LLMOnly','ImageGeneration','ClaudeOpusQuery'];
+  const keys=[...preferred.filter(k=>k in remaining),...Object.keys(remaining).filter(k=>!preferred.includes(k)).sort()];
+  const quotas=keys.length?keys.map(k=>`<span style="display:inline-block;margin:2px 6px 2px 0"><b>${esc(k)}</b> ${remaining[k]}</span>`).join(''):'';
+  const throttling=x.throttling||{};
+  const used=throttling.numUserMessagesInConversation;
+  const max=throttling.maxNumUserMessagesInConversation;
+  const conversation=Number.isFinite(used)&&Number.isFinite(max)?`<div>Conversation ${used} / ${max}</div>`:'';
+  const meter=x.meterError?`<div style="color:var(--danger)">Meter: ${esc(x.meterError)}${x.meterHasAccess===false?' (access denied)':''}</div>`:'';
+  if(!quotas&&!conversation&&!meter)return '';
+  return `<div style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.45">${meter}${conversation}${quotas?`<div>${quotas}</div>`:''}</div>`;
+}
 function renderAccounts(){
   const q=($('accountSearch').value||'').trim().toLowerCase();
   const list=_accountsCache.filter(x=>{
@@ -1074,21 +1087,32 @@ function renderAccounts(){
     if(q&&!((x.displayName||'')+' '+(x.email||'')).toLowerCase().includes(q))return false;
     return true;
   });
-  $('accountRows').innerHTML=list.length?list.map(x=>{
+  const rows=$('accountRows');
+  rows.replaceChildren();
+  if(!list.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=7;td.className='empty';td.textContent='No matching accounts';tr.append(td);rows.append(tr);return;}
+  list.forEach(x=>{
     const cooldown=x.cooldownUntil?`<div style="font-size:11px;color:var(--muted);margin-top:3px"><span>Cooldown until</span> ${new Date(x.cooldownUntil).toLocaleString()}</div>`:'';
     const status=x.status==='cooldown'?`<div><span class="status cooldown"><i></i>Cooldown</span>${cooldown}</div>`:x.status==='online'?'<span class="status online"><i></i>Online</span>':'<span class="status offline"><i></i>Offline</span>';
-    const calls=x.rateLimited?`Limited after ${x.callCount||0} calls`:`Called ${x.callCount||0} times`;
+    const calls=(x.rateLimited?`Limited after ${x.callCount||0} calls`:`Called ${x.callCount||0} times`)+accountQuotaDetails(x);
     const scheduleEnabled=x.scheduleEnabled!==false;
-    const proxyLabel=x.boundProxy?`<span style="font-size:11px;word-break:break-all">${esc(x.boundProxy)}</span>`:'<span style="color:var(--muted);font-size:11px">—</span>';
-    return `<tr><td><div class="account-cell"><div class="avatar">${(x.displayName||x.email||'M')[0]}</div><div><b>${x.displayName||x.email}</b><div style="font-size:11px;color:var(--muted)">${x.email||''}</div></div></div></td><td style="font-size:12px;white-space:nowrap">${calls}</td><td>${status}</td><td style="font-size:12px;color:var(--muted)">${x.updatedAt?new Date(x.updatedAt).toLocaleString():'-'}</td><td><button class="btn-sm btn${scheduleEnabled?'':' danger'}" onclick="toggleAccountSchedule('${x.id}',${!scheduleEnabled})">${scheduleEnabled?'Enabled':'Disabled'}</button></td><td>${proxyLabel} <button class="btn-sm btn" style="margin-top:2px" onclick="bindAccountProxy('${x.id}','${esc(x.boundProxy||'')}')">Bind</button></td><td><button class="btn-sm btn danger" onclick="deleteAccount('${x.id}')">Delete</button></td></tr>`;
-  }).join(''):'<tr><td colspan="7" class="empty">No matching accounts</td></tr>';
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td><div class="account-cell"><div class="avatar"></div><div><b></b><div class="account-email" style="font-size:11px;color:var(--muted)"></div></div></div></td><td style="font-size:12px;white-space:nowrap">${calls}</td><td>${status}</td><td style="font-size:12px;color:var(--muted)">${x.updatedAt?new Date(x.updatedAt).toLocaleString():'-'}</td><td><button class="btn-sm btn${scheduleEnabled?'':' danger'}" data-account-action="schedule">${scheduleEnabled?'Enabled':'Disabled'}</button></td><td><span class="account-proxy" style="font-size:11px;word-break:break-all"></span> <button class="btn-sm btn" style="margin-top:2px" data-account-action="proxy">Bind</button></td><td><button class="btn-sm btn danger" data-account-action="delete">Delete</button></td>`;
+    tr.querySelector('.avatar').textContent=(x.displayName||x.email||'M')[0];
+    tr.querySelector('b').textContent=x.displayName||x.email||'';
+    tr.querySelector('.account-email').textContent=x.email||'';
+    const proxy=tr.querySelector('.account-proxy');proxy.textContent=x.boundProxy||'—';if(!x.boundProxy)proxy.style.color='var(--muted)';
+    tr.querySelector('[data-account-action="schedule"]').addEventListener('click',()=>toggleAccountSchedule(x.id,!scheduleEnabled));
+    tr.querySelector('[data-account-action="proxy"]').addEventListener('click',()=>bindAccountProxy(x.id,x.boundProxy||''));
+    tr.querySelector('[data-account-action="delete"]').addEventListener('click',()=>deleteAccount(x.id));
+    rows.append(tr);
+  });
 }
 async function loadAccounts(){
   try{
     const d=await api('/api/accounts');
     _accountsCache=d.accounts||[];
     renderAccounts();
-  }catch(e){$('accountRows').innerHTML=`<tr><td colspan="7" class="empty">${e.message}</td></tr>`;}
+  }catch(e){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=7;td.className='empty';td.textContent=e.message;tr.append(td);$('accountRows').replaceChildren(tr);}
 }
 
 async function toggleAccountSchedule(id,enabled){
@@ -1149,13 +1173,23 @@ async function loadKeys(){
   try{
     const d=await api('/api/admin/keys');
     const k=d.keys||[];
-    $('keyRows').innerHTML=k.length?k.map(x=>`<tr><td><b>${x.name}</b></td><td><code>${x.prefix}</code></td><td style="font-size:12px;color:var(--muted)">${new Date(x.createdAt).toLocaleString()}</td><td>${x.revoked?'<span class="status offline"><i></i>Disabled</span>':'<span class="status online"><i></i>Active</span>'}</td><td style="font-size:12px;color:var(--muted)">${x.lastUsedAt?new Date(x.lastUsedAt).toLocaleString():'-'}</td><td style="text-align:right;white-space:nowrap">
-      <button class="btn-sm btn" onclick="openUseKey('${x.id}')">Use key</button>
-      <button class="btn-sm btn" onclick="editKey('${x.id}','${x.name.replace(/'/g,"\\'")}')">Edit</button>
-      <button class="btn-sm btn ${x.revoked?'success':'danger'}" onclick="toggleKey('${x.id}',${x.revoked})">${x.revoked?'Enable':'Disable'}</button>
-      <button class="btn-sm btn danger" onclick="revokeKey('${x.id}')">Delete</button>
-    </td></tr>`).join(''):'<tr><td colspan="6" class="empty">No API keys</td></tr>';
-  }catch(e){$('keyRows').innerHTML=`<tr><td colspan="6" class="empty">${e.message}</td></tr>`;}
+    const rows=$('keyRows');
+    rows.replaceChildren();
+    if(!k.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=6;td.className='empty';td.textContent='No API keys';tr.append(td);rows.append(tr);return;}
+    k.forEach(x=>{
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td><b></b></td><td><code></code></td><td class="key-created" style="font-size:12px;color:var(--muted)"></td><td><span class="status ${x.revoked?'offline':'online'}"><i></i>${x.revoked?'Disabled':'Active'}</span></td><td class="key-last-used" style="font-size:12px;color:var(--muted)"></td><td style="text-align:right;white-space:nowrap"><button class="btn-sm btn" data-key-action="use">Use key</button><button class="btn-sm btn" data-key-action="edit">Edit</button><button class="btn-sm btn ${x.revoked?'success':'danger'}" data-key-action="toggle">${x.revoked?'Enable':'Disable'}</button><button class="btn-sm btn danger" data-key-action="delete">Delete</button></td>`;
+      tr.querySelector('b').textContent=x.name||'';
+      tr.querySelector('code').textContent=x.prefix||'';
+      tr.querySelector('.key-created').textContent=new Date(x.createdAt).toLocaleString();
+      tr.querySelector('.key-last-used').textContent=x.lastUsedAt?new Date(x.lastUsedAt).toLocaleString():'-';
+      tr.querySelector('[data-key-action="use"]').addEventListener('click',()=>openUseKey(x.id));
+      tr.querySelector('[data-key-action="edit"]').addEventListener('click',()=>editKey(x.id,x.name));
+      tr.querySelector('[data-key-action="toggle"]').addEventListener('click',()=>toggleKey(x.id,x.revoked));
+      tr.querySelector('[data-key-action="delete"]').addEventListener('click',()=>revokeKey(x.id));
+      rows.append(tr);
+    });
+  }catch(e){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=6;td.className='empty';td.textContent=e.message;tr.append(td);$('keyRows').replaceChildren(tr);}
 }
 
 let editKeyId=null;
@@ -1224,7 +1258,7 @@ async function loadUsage(){
     renderBars('ugKeys',(d.stats||{}).keys||[],m=>m.api_key_prefix,'requests');
     loadUsageLogs();
   }catch(e){
-    $('ugLogRows').innerHTML=`<tr><td colspan="6" class="empty">${e.message}</td></tr>`;
+    const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=6;td.className='empty';td.textContent=e.message;tr.append(td);$('ugLogRows').replaceChildren(tr);
   }
 }
 
@@ -1302,7 +1336,7 @@ async function loadUsageLogs(){
     $('ugPrev').disabled=ugPageNo<=0;
     $('ugNext').disabled=ugPageNo>=totalPages-1;
   }catch(e){
-    $('ugLogRows').innerHTML=`<tr><td colspan="6" class="empty">${e.message}</td></tr>`;
+    const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=6;td.className='empty';td.textContent=e.message;tr.append(td);$('ugLogRows').replaceChildren(tr);
   }
 }
 
@@ -1499,7 +1533,7 @@ async function loadProxies(){
     const d=await api('/api/admin/proxy-pool');
     const p=d.proxies||[];
     $('proxyRows').innerHTML=p.length?p.map(proxyRow).join(''):'<tr><td colspan="6" class="empty">No proxies; requests will connect directly</td></tr>';
-  }catch(e){$('proxyRows').innerHTML=`<tr><td colspan="6" class="empty">${e.message}</td></tr>`;}
+  }catch(e){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=6;td.className='empty';td.textContent=e.message;tr.append(td);$('proxyRows').replaceChildren(tr);}
 }
 async function proxyAdd(){
   const raw=$('proxyInput').value.trim();
@@ -1549,7 +1583,7 @@ async function loadModelTest(){
     const models=d.data||[];
     if(!models.length){$('modelTestRows').innerHTML='<tr><td colspan="4" class="empty">No models available</td></tr>';return;}
     $('modelTestRows').innerHTML=models.map(m=>`<tr data-model="${esc(m.id)}"><td><b>${esc(m.id)}</b></td><td><span class="status"><i></i>Not tested</span></td><td style="font-size:12px;color:var(--muted)">-</td><td style="font-size:12px;color:var(--muted)">点击"测试全部"</td></tr>`).join('');
-  }catch(e){$('modelTestRows').innerHTML=`<tr><td colspan="4" class="empty">${e.message}</td></tr>`;}
+  }catch(e){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=4;td.className='empty';td.textContent=e.message;tr.append(td);$('modelTestRows').replaceChildren(tr);}
 }
 async function modelTestOne(id,row){
   const badge=row.querySelector('td:nth-child(2)');

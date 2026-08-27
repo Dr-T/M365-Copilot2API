@@ -24,7 +24,7 @@ type pooledConn struct {
 
 const (
 	maxPoolPerKey = 2
-	poolConnTTL   = 60 * time.Second
+	poolConnTTL   = 300 * time.Second
 )
 
 type ConnPool struct {
@@ -197,6 +197,10 @@ func (p *ConnPool) Warm(ctx context.Context, acc Account, wsURL string) {
 	p.startPark(key, pc)
 
 	log.Printf("[connpool] warmed connection oid=%s tid=%s", acc.OID, acc.TID)
+}
+
+func (p *ConnPool) WarmWithProbe(ctx context.Context, acc Account, wsURL string) {
+	p.Warm(ctx, acc, wsURL)
 }
 
 func (p *ConnPool) Return(oid, tid string, conn *websocket.Conn) {

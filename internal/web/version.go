@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	Version     = "0.5.0"
+	Version     = "0.6.1"
 	Commit      = "unknown"
 	BuildTime   = "unknown"
 	startedAt   = time.Now()

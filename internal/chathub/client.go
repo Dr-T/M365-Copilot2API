@@ -33,6 +33,34 @@ var ErrImageLimit = errors.New("upstream image generation daily limit reached")
 
 var ErrOffensiveContent = errors.New("upstream content policy flagged as offensive")
 
+var ErrMeteringThrottled = errors.New("upstream metering throttle: capability access denied")
+
+func checkMeteringError(mi any) error {
+	arr, ok := mi.([]any)
+	if !ok {
+		return nil
+	}
+	for _, item := range arr {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		meterErr, _ := m["meterError"].(string)
+		hasAccess, _ := m["hasAccess"].(bool)
+		if meterErr != "" && !hasAccess {
+			switch meterErr {
+			case "ImageGenInsufficientTokensThrottled":
+				return ErrImageLimit
+			case "ImageGenSystemCapacityThrottled":
+				return ErrMeteringThrottled
+			default:
+				return ErrMeteringThrottled
+			}
+		}
+	}
+	return nil
+}
+
 var contentPolicyPatterns = []string{
 	"很抱歉，我无法响应",
 	"我很抱歉，我无法响应",
@@ -142,6 +170,19 @@ func IsRetriablePhase(p Phase) bool {
 
 var chTrace = os.Getenv("M365_TRACE") == "1"
 
+func commonPrefixLen(a, b string) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[i] != b[i] {
+			return i
+		}
+	}
+	return n
+}
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -179,38 +220,38 @@ type Account struct {
 }
 
 type Request struct {
-	Text           string
-	Tone           string
-	ConversationID string
-	SessionID      string
-	Attachments    []Attachment
-	Tools          []Tool
-	ToolChoice     any
-	MCPServerURL   string
-	Started        bool
-	ConversationSignature   string
-	PreviousMessages        []ContextMessage
-	LicenseType             string
-	Scenario                string
-	ConnectedFederatedIDs   []string
-	FeatureFlags            FeatureFlags
-	DisableMemory           bool
-	Locale                  string
-	Market                  string
-	TimeZone                string
-	TimeZoneOffset          int
-	DeviceOS                string
+	Text                  string
+	Tone                  string
+	ConversationID        string
+	SessionID             string
+	Attachments           []Attachment
+	Tools                 []Tool
+	ToolChoice            any
+	MCPServerURL          string
+	Started               bool
+	ConversationSignature string
+	PreviousMessages      []ContextMessage
+	LicenseType           string
+	Scenario              string
+	ConnectedFederatedIDs []string
+	FeatureFlags          FeatureFlags
+	DisableMemory         bool
+	Locale                string
+	Market                string
+	TimeZone              string
+	TimeZoneOffset        int
+	DeviceOS              string
 }
 
 type FeatureFlags struct {
-	MemoryV2            bool
-	DeepWork            bool
-	ComputerUse         bool
-	RealtimeVoice       bool
+	MemoryV2             bool
+	DeepWork             bool
+	ComputerUse          bool
+	RealtimeVoice        bool
 	SystemPromptOverride bool
-	DesignerImageGen4o  bool
-	CodeCanvas          bool
-	SydneyReconnect     bool
+	DesignerImageGen4o   bool
+	CodeCanvas           bool
+	SydneyReconnect      bool
 }
 
 type ContextMessage struct {
@@ -236,10 +277,10 @@ type StreamEvent struct {
 type StreamHandler func(StreamEvent) error
 
 type Timestamps struct {
-	RequestSent                string `json:"requestSent"`
+	RequestSent                  string `json:"requestSent"`
 	FirstServiceResponseReceived string `json:"firstServiceResponseReceived,omitempty"`
-	FirstTokenReceived         string `json:"firstTokenReceived,omitempty"`
-	LastTokenReceived          string `json:"lastTokenReceived,omitempty"`
+	FirstTokenReceived           string `json:"firstTokenReceived,omitempty"`
+	LastTokenReceived            string `json:"lastTokenReceived,omitempty"`
 }
 
 type Result struct {
@@ -307,7 +348,6 @@ func NewClient() *Client {
 		HTTPHeader: h,
 		HTTPClient: outbound.HTTPClient(),
 		Dialer:     d,
-		Pool:       NewConnPool(d, h),
 	}
 }
 
@@ -559,11 +599,14 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			return false
 		}
 		t := strings.ToLower(text)
-		return strings.Contains(t, "temporarily unable to respond to this many requests") ||
+		return strings.Contains(t, "temporarily unable to respond to this volume of requests") ||
+			strings.Contains(t, "temporarily unable to respond to this many requests") ||
+			strings.Contains(t, "too many requests") ||
 			strings.Contains(t, "太多请求") ||
 			strings.Contains(t, "无法响应这么多请求") ||
-			strings.Contains(t, "too many requests") ||
-			strings.Contains(t, "please retry") && strings.Contains(t, "later")
+			strings.Contains(t, "请求量过大") ||
+			strings.Contains(t, "请稍后重试") && strings.Contains(t, "暂时无法") ||
+			(strings.Contains(t, "please retry") || strings.Contains(t, "please try again")) && strings.Contains(t, "later")
 	}
 	imageLimitDetected := func(text string) bool {
 		if streamed.Len() != 0 {
@@ -609,6 +652,10 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		}
 		if len(snapshot) <= len(cur) {
 			return nil
+		}
+		overlap := commonPrefixLen(cur, snapshot)
+		if overlap > 0 {
+			return emitDelta(snapshot[overlap:])
 		}
 		skippedSnapshots++
 		if chTrace {
@@ -977,25 +1024,40 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 						}
 					}
 					if res, ok := item["result"].(map[string]any); ok {
-					rawResult, _ = res["value"].(string)
-					if mi, ok := res["meteringInformation"]; ok && mi != nil {
-						meteringInformation = mi
-					}
-					if msg, ok := res["message"].(string); ok {
-						final = msg
-						if imageLimitDetected(final) {
+						rawResult, _ = res["value"].(string)
+						if rawResult != "" && rawResult != "Success" {
+							log.Printf("[chathub] result.value=%q (non-Success)", rawResult)
+							low := strings.ToLower(rawResult)
+							if strings.Contains(low, "throttl") {
+								returnConn = false
+								return Result{}, ErrMeteringThrottled
+							}
 							returnConn = false
-							return Result{}, ErrImageLimit
+							return Result{}, fmt.Errorf("upstream result error: %s", rawResult)
 						}
-						if rateLimited(final) {
-							returnConn = false
-							return Result{}, ErrRateLimitNotice
+						if mi, ok := res["meteringInformation"]; ok && mi != nil {
+							meteringInformation = mi
+							if meterErr := checkMeteringError(mi); meterErr != nil {
+								log.Printf("[chathub] meteringError in type:2 frame: %v", meterErr)
+								returnConn = false
+								return Result{}, meterErr
+							}
 						}
-						if IsContentPolicyBlock(final) {
-							returnConn = false
-							return Result{}, ErrOffensiveContent
+						if msg, ok := res["message"].(string); ok {
+							final = msg
+							if imageLimitDetected(final) {
+								returnConn = false
+								return Result{}, ErrImageLimit
+							}
+							if rateLimited(final) {
+								returnConn = false
+								return Result{}, ErrRateLimitNotice
+							}
+							if IsContentPolicyBlock(final) {
+								returnConn = false
+								return Result{}, ErrOffensiveContent
+							}
 						}
-					}
 					}
 				}
 				// completion frame often follows; keep reading a bit but we already have content
@@ -1005,7 +1067,19 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			if int(t) == 3 {
 				if errObj, ok := obj["error"].(map[string]any); ok {
 					returnConn = false
-					return Result{}, fmt.Errorf("chathub completion error: %v", errObj)
+					errCode, _ := errObj["code"].(string)
+					errMsg, _ := errObj["message"].(string)
+					switch errCode {
+					case "ErrorUserBanned":
+						return Result{}, fmt.Errorf("%w: account banned", ErrRateLimitNotice)
+					case "ErrorUserThrottled", "InsufficientTokens":
+						return Result{}, ErrRateLimitNotice
+					default:
+						if errMsg != "" {
+							return Result{}, fmt.Errorf("chathub completion error: code=%q message=%q", errCode, errMsg)
+						}
+						return Result{}, fmt.Errorf("chathub completion error: %v", errObj)
+					}
 				}
 				phase = PhaseCompleted
 				ts.LastTokenReceived = time.Now().UTC().Format(time.RFC3339Nano)
@@ -1066,17 +1140,6 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					Normalized:                NormalizeEvents(events),
 					Images:                    imageURLs(events),
 					Timestamps:                ts,
-				}
-				if c.Pool != nil {
-					go func() {
-						warmCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-						defer cancel()
-						warmReqID := uuid.NewString()
-						warmSID := uuid.NewString()
-						warmCID := uuid.NewString()
-						warmURL, _ := BuildWSURL(acc, warmSID, warmCID, warmReqID, req.LicenseType, req.Scenario)
-						c.Pool.Warm(warmCtx, acc, warmURL)
-					}()
 				}
 				return result, nil
 			}
@@ -1364,13 +1427,13 @@ func chatPayload(req Request, requestID string, firstTurn bool) string {
 			"timeZoneOffset": tzOffset,
 			"timeZone":       tz,
 		},
-		"locale":         locale,
-		"messageType":    "Chat",
-		"experienceType": "Default",
-		"adaptiveCards":  []any{},
-		"clientPreferences": map[string]any{},
+		"locale":                        locale,
+		"messageType":                   "Chat",
+		"experienceType":                "Default",
+		"adaptiveCards":                 []any{},
+		"clientPreferences":             map[string]any{},
 		"connectedFederatedConnections": fcAny,
-		"clientInfo": clientInfo,
+		"clientInfo":                    clientInfo,
 	}
 	// The browser does not send an OpenAI attachments array to ChatHub. It
 	// sends a file annotation after the file has been uploaded by Office.

@@ -118,7 +118,7 @@ func (s *Server) chatWithAccount(ctx context.Context, accountID string, account 
 		s.accountPool.MarkCall(accountID)
 	}
 	result, err := s.accountClient(accountID).Chat(ctx, account, request)
-	s.markAccountResult(accountID, err)
+	s.recordAccountChatResult(accountID, result, err)
 	return result, err
 }
 
@@ -132,7 +132,7 @@ func (s *Server) chatWithAccountEvents(ctx context.Context, accountID string, ac
 		s.accountPool.MarkCall(accountID)
 	}
 	result, err := s.accountClient(accountID).ChatWithEvents(ctx, account, request, onEvent)
-	s.markAccountResult(accountID, err)
+	s.recordAccountChatResult(accountID, result, err)
 	return result, err
 }
 
@@ -146,6 +146,6 @@ func (s *Server) chatWithAccountReasoning(ctx context.Context, accountID string,
 		s.accountPool.MarkCall(accountID)
 	}
 	result, err := s.accountClient(accountID).ChatWithReasoning(ctx, account, request, onDelta, onReasoning)
-	s.markAccountResult(accountID, err)
+	s.recordAccountChatResult(accountID, result, err)
 	return result, err
 }

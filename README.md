@@ -515,6 +515,25 @@ curl http://127.0.0.1:4141/v1/messages \
 | `/api/chat` · `/chat/stream` | 控制台内即时对话 |
 | `/api/health` · `/api/version` | 健康检查 / 版本 |
 
+## 错误码与故障转移
+
+所有 `/v1/*` 与 `/api/chat*` 失败均返回 OpenAI 兼容的 JSON 错误体 `{"error":{"message","type","code","param":null}}`（`code` 与 `type` 同值），并附带 `X-M365-*` 诊断头。`type/code` 取值即 OpenAI 标准错误类型，便于 `openai` / `anthropic` SDK 直接识别：
+
+| `error.type` / `error.code` | HTTP | 何时出现 | 客户端应如何处理 |
+|---|---|---|---|
+| `rate_limit_error` | 429 | 上游限流：HTTP 429、`result.value=Throttled`、`meteringInformation.hasAccess=false`、文本限流提示 | 遵守 `Retry-After` 退避；客户端重试时网关会自动切到下一个健康账号 |
+| `image_limit_error` | 429 | 图片配额当日耗尽 | 次日 UTC 0 点后重试；纯文本请求不受影响 |
+| `upstream_content_blocked` | 503 | 内容策略拦截 | 修改提示词或换号重试 |
+| `upstream_error` | 502 | 上游空回复或未知失败 | 换号重试或稍后重试 |
+
+额外响应头：`X-M365-Proxy-Error`（`QUOTA_429 / OVERLOAD_503 / FORBIDDEN_403 / AUTH_EXPIRED_401 / UPSTREAM_STRUCTURED / IMAGE_LIMIT` 等）、`X-M365-RateLimit-Remaining`、`Retry-After` / `X-M365-Retry-After` / `X-M365-RateLimit-Reset`、`X-M365-Global-Circuit`。多账号部署下，`429/401` 在未指定 `AccountID` 且未携带固定会话时会自动故障转移到下一个健康账号（OpenAI / Anthropic / Responses 均生效）。
+
+示例（429）：
+
+```json
+{"error":{"message":"upstream is rate limiting; try again shortly","type":"rate_limit_error","code":"rate_limit_error","param":null}}
+```
+
 ## 测试
 
 仓库自带完整单元测试（会话解析、自动清理、工具路由、协议兼容、用量统计等），运行：

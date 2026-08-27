@@ -15,25 +15,25 @@ import (
 type ErrorCategory string
 
 const (
-	CategoryQuota429          ErrorCategory = "QUOTA_429"
-	CategoryOverload503       ErrorCategory = "OVERLOAD_503"
-	CategoryAuthExpired401    ErrorCategory = "AUTH_EXPIRED_401"
-	CategoryForbidden403      ErrorCategory = "FORBIDDEN_403"
-	CategoryRetryable422      ErrorCategory = "RETRYABLE_422"
-	CategoryUserBanned        ErrorCategory = "USER_BANNED"
-	CategoryUserThrottled     ErrorCategory = "USER_THROTTLED"
+	CategoryQuota429           ErrorCategory = "QUOTA_429"
+	CategoryOverload503        ErrorCategory = "OVERLOAD_503"
+	CategoryAuthExpired401     ErrorCategory = "AUTH_EXPIRED_401"
+	CategoryForbidden403       ErrorCategory = "FORBIDDEN_403"
+	CategoryRetryable422       ErrorCategory = "RETRYABLE_422"
+	CategoryUserBanned         ErrorCategory = "USER_BANNED"
+	CategoryUserThrottled      ErrorCategory = "USER_THROTTLED"
 	CategoryInsufficientTokens ErrorCategory = "INSUFFICIENT_TOKENS"
-	CategoryDesignerDisabled  ErrorCategory = "DESIGNER_DISABLED"
-	CategorySOCKS5            ErrorCategory = "SOCKS5"
-	CategoryDNS               ErrorCategory = "DNS"
-	CategoryTCP               ErrorCategory = "TCP"
-	CategoryTLS               ErrorCategory = "TLS"
-	CategoryWSHandshake       ErrorCategory = "WS_HANDSHAKE"
-	CategoryWSReadTimeout     ErrorCategory = "WS_READ_TIMEOUT"
+	CategoryDesignerDisabled   ErrorCategory = "DESIGNER_DISABLED"
+	CategorySOCKS5             ErrorCategory = "SOCKS5"
+	CategoryDNS                ErrorCategory = "DNS"
+	CategoryTCP                ErrorCategory = "TCP"
+	CategoryTLS                ErrorCategory = "TLS"
+	CategoryWSHandshake        ErrorCategory = "WS_HANDSHAKE"
+	CategoryWSReadTimeout      ErrorCategory = "WS_READ_TIMEOUT"
 	CategoryUpstreamStructured ErrorCategory = "UPSTREAM_STRUCTURED"
-	CategoryClientCanceled    ErrorCategory = "CLIENT_CANCELED"
-	CategoryGlobalUnavailable ErrorCategory = "GLOBAL_UNAVAILABLE"
-	CategoryUnknown           ErrorCategory = "UNKNOWN"
+	CategoryClientCanceled     ErrorCategory = "CLIENT_CANCELED"
+	CategoryGlobalUnavailable  ErrorCategory = "GLOBAL_UNAVAILABLE"
+	CategoryUnknown            ErrorCategory = "UNKNOWN"
 )
 
 type UpstreamHTTPError struct {
@@ -54,7 +54,7 @@ func ClassifyError(err error) ErrorCategory {
 	if errors.Is(err, context.Canceled) {
 		return CategoryClientCanceled
 	}
-	if errors.Is(err, chathub.ErrRateLimitNotice) {
+	if errors.Is(err, chathub.ErrRateLimitNotice) || errors.Is(err, chathub.ErrMeteringThrottled) {
 		return CategoryQuota429
 	}
 	if errors.Is(err, chathub.ErrEmptyCompletion) || errors.Is(err, chathub.ErrOffensiveContent) || errors.Is(err, chathub.ErrImageLimit) {
@@ -182,7 +182,7 @@ func IsRateLimited(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, chathub.ErrRateLimitNotice) {
+	if errors.Is(err, chathub.ErrRateLimitNotice) || errors.Is(err, chathub.ErrMeteringThrottled) {
 		return true
 	}
 	var httpErr *UpstreamHTTPError
@@ -299,11 +299,11 @@ func CooldownForCategory(cat ErrorCategory, retryAfter int, attempt int) time.Du
 }
 
 type globalCircuitState struct {
-	mu        sync.Mutex
+	mu          sync.Mutex
 	windowStart time.Time
-	total     int
-	failures  int
-	openUntil time.Time
+	total       int
+	failures    int
+	openUntil   time.Time
 }
 
 var globalCircuit = &globalCircuitState{}
@@ -356,7 +356,12 @@ func (g *globalCircuitState) Record(err error) {
 		return
 	}
 	cat := ClassifyError(err)
-	if cat == CategoryClientCanceled || cat == CategoryGlobalUnavailable {
+	switch cat {
+	case CategorySOCKS5, CategoryDNS, CategoryTCP, CategoryTLS, CategoryWSHandshake, CategoryWSReadTimeout:
+		// Only shared transport and infrastructure failures contribute to the
+		// global circuit. Account-, policy-, quota-, and request-specific errors
+		// are handled by per-account health state.
+	default:
 		// Client cancels are not upstream faults. Failures already classified
 		// as GLOBAL_UNAVAILABLE must not re-arm the circuit, otherwise traffic
 		// rejected while the circuit is open keeps renewing openUntil forever
@@ -383,10 +388,10 @@ func (g *globalCircuitState) Record(err error) {
 	g.mu.Unlock()
 }
 
-func GlobalCircuitIsOpen() bool { return globalCircuit.IsOpen() }
-func GlobalCircuitState() string { return globalCircuit.State() }
+func GlobalCircuitIsOpen() bool         { return globalCircuit.IsOpen() }
+func GlobalCircuitState() string        { return globalCircuit.State() }
 func GlobalCircuitOpenUntil() time.Time { return globalCircuit.OpenUntil() }
-func GlobalCircuitRecord(err error) { globalCircuit.Record(err) }
+func GlobalCircuitRecord(err error)     { globalCircuit.Record(err) }
 func ResetGlobalCircuit() {
 	globalCircuit.mu.Lock()
 	globalCircuit.windowStart = time.Time{}
@@ -397,18 +402,21 @@ func ResetGlobalCircuit() {
 }
 
 type accountHealth struct {
-	mu                       sync.Mutex
-	cooldown                 map[string]time.Time
-	authFail                 map[string]bool
-	limited                  map[string]bool
-	calls                    map[string]uint64
-	imageLimited             map[string]bool
-	imageLimitUntil          map[string]time.Time
-	imageGenCooldownUntil    map[string]time.Time
-	imageGenSystemCooldown   map[string]time.Time
-	lastThrottling           map[string]any
-	authFailReason           map[string]string
-	quotaAttempts            map[string]int
+	mu                     sync.Mutex
+	cooldown               map[string]time.Time
+	authFail               map[string]bool
+	limited                map[string]bool
+	calls                  map[string]uint64
+	imageLimited           map[string]bool
+	imageLimitUntil        map[string]time.Time
+	imageGenCooldownUntil  map[string]time.Time
+	imageGenSystemCooldown map[string]time.Time
+	lastThrottling         map[string]any
+	lastMeterError         map[string]string
+	lastMeterAccess        map[string]bool
+	remainingAllowance     map[string]map[string]int
+	authFailReason         map[string]string
+	quotaAttempts          map[string]int
 }
 
 func newAccountHealth() *accountHealth {
@@ -423,6 +431,9 @@ func newAccountHealth() *accountHealth {
 		imageGenCooldownUntil:  map[string]time.Time{},
 		imageGenSystemCooldown: map[string]time.Time{},
 		lastThrottling:         map[string]any{},
+		lastMeterError:         map[string]string{},
+		lastMeterAccess:        map[string]bool{},
+		remainingAllowance:     map[string]map[string]int{},
 		authFailReason:         map[string]string{},
 		quotaAttempts:          map[string]int{},
 	}
@@ -550,7 +561,52 @@ func (h *accountHealth) UpdateThrottling(accountID string, data any) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.lastThrottling[accountID] = data
+	b, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	var copied any
+	if json.Unmarshal(b, &copied) != nil {
+		return
+	}
+	h.lastThrottling[accountID] = copied
+}
+
+func (h *accountHealth) UpdateMetering(accountID, meterError string, hasAccess bool, remaining map[string]int) {
+	if h == nil || accountID == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.lastMeterError[accountID] = meterError
+	h.lastMeterAccess[accountID] = hasAccess
+	if len(remaining) == 0 {
+		delete(h.remainingAllowance, accountID)
+		return
+	}
+	copyRemaining := make(map[string]int, len(remaining))
+	for capability, allowance := range remaining {
+		copyRemaining[capability] = allowance
+	}
+	h.remainingAllowance[accountID] = copyRemaining
+}
+
+func (h *accountHealth) GetMetering(accountID string) (string, bool, map[string]int) {
+	if h == nil {
+		return "", true, nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	remaining := h.remainingAllowance[accountID]
+	copyRemaining := make(map[string]int, len(remaining))
+	for capability, allowance := range remaining {
+		copyRemaining[capability] = allowance
+	}
+	hasAccess, ok := h.lastMeterAccess[accountID]
+	if !ok {
+		hasAccess = true
+	}
+	return h.lastMeterError[accountID], hasAccess, copyRemaining
 }
 
 func (h *accountHealth) GetThrottling(accountID string) any {
@@ -647,6 +703,11 @@ func (h *accountHealth) MarkFailure(accountID string, err error, window time.Dur
 		delete(h.authFail, accountID)
 		delete(h.authFailReason, accountID)
 		h.limited[accountID] = true
+		if errors.Is(err, chathub.ErrMeteringThrottled) && RetryAfterSeconds(err) == 0 {
+			h.quotaAttempts[accountID] = 0
+			h.cooldown[accountID] = time.Now().Add(15 * time.Minute)
+			return
+		}
 		attempt := h.quotaAttempts[accountID] + 1
 		h.quotaAttempts[accountID] = attempt
 		cd := CooldownForCategory(cat, RetryAfterSeconds(err), attempt)
@@ -782,6 +843,15 @@ func (h *accountHealth) Snapshot() map[string]map[string]any {
 	for id := range h.lastThrottling {
 		ids[id] = true
 	}
+	for id := range h.lastMeterError {
+		ids[id] = true
+	}
+	for id := range h.lastMeterAccess {
+		ids[id] = true
+	}
+	for id := range h.remainingAllowance {
+		ids[id] = true
+	}
 	for id := range h.calls {
 		ids[id] = true
 	}
@@ -826,7 +896,27 @@ func (h *accountHealth) Snapshot() map[string]map[string]any {
 			}
 		}
 		if t := h.lastThrottling[id]; t != nil {
-			m["throttling"] = t
+			if b, err := json.Marshal(t); err == nil {
+				var copied any
+				if json.Unmarshal(b, &copied) == nil {
+					m["throttling"] = copied
+				}
+			}
+		}
+		if meterError := h.lastMeterError[id]; meterError != "" {
+			m["meterError"] = meterError
+		}
+		hasAccess, ok := h.lastMeterAccess[id]
+		if !ok {
+			hasAccess = true
+		}
+		m["hasAccess"] = hasAccess
+		if remaining := h.remainingAllowance[id]; len(remaining) > 0 {
+			copied := make(map[string]int, len(remaining))
+			for capability, allowance := range remaining {
+				copied[capability] = allowance
+			}
+			m["remainingAllowance"] = copied
 		}
 		if r := h.authFailReason[id]; r != "" {
 			m["authFailReason"] = r
@@ -857,6 +947,9 @@ func (h *accountHealth) ClearAllCooldowns() {
 	h.imageGenCooldownUntil = map[string]time.Time{}
 	h.imageGenSystemCooldown = map[string]time.Time{}
 	h.lastThrottling = map[string]any{}
+	h.lastMeterError = map[string]string{}
+	h.lastMeterAccess = map[string]bool{}
+	h.remainingAllowance = map[string]map[string]int{}
 	h.authFailReason = map[string]string{}
 	h.quotaAttempts = map[string]int{}
 	ResetGlobalCircuit()
